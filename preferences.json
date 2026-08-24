@@ -36,7 +36,7 @@
     ]
   },
   {
-    "type": "text",
+    "type": "string",
     "label": "Projects JSON",
     "property": "zen.project.tidy.projects",
     "defaultValue": "{\"selfhosting\":{\"keywords\":\"proxmox truenas pfsense homelab selfhosted server vm docker\",\"domains\":[\"reddit.com/r/selfhosted\",\"reddit.com/r/homelab\"],\"color\":\"#ff8844\"},\"obsidian portfolio\":{\"keywords\":\"obsidian markdown portfolio website cv resume\",\"domains\":[],\"color\":\"#4488ff\"}}"
@@ -48,13 +48,13 @@
     "defaultValue": false
   },
   {
-    "type": "text",
+    "type": "string",
     "label": "Gemini API key",
     "property": "zen.project.tidy.gemini.key",
     "defaultValue": ""
   },
   {
-    "type": "text",
+    "type": "string",
     "label": "Gemini model",
     "property": "zen.project.tidy.gemini.model",
     "defaultValue": "gemini-1.5-flash-latest"
