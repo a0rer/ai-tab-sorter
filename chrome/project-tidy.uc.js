@@ -375,9 +375,11 @@
       folder.setAttribute("zen-workspace-id", workspaceId);
       if (color) folder.style.setProperty("--folder-color", color);
 
-      const container = document.querySelector(
-        `#zen-tabs-list[zen-workspace-id="${workspaceId}"] .zen-workspace-pinned-tabs-section`
-      );
+      const container =
+        document.querySelector(`#zen-tabs-list[zen-workspace-id="${workspaceId}"] .zen-workspace-pinned-tabs-section`) ||
+        document.querySelector(`#zen-tabs-list .zen-workspace-pinned-tabs-section`) ||
+        document.querySelector(`.zen-workspace-pinned-tabs-section`) ||
+        document.querySelector(`#zen-tabs-list[zen-workspace-id="${workspaceId}"]`);
       if (container) {
         container.appendChild(folder);
         return folder;
@@ -389,9 +391,11 @@
     return null;
   }
 
-  function createTabGroup(name, workspaceId, color) {
+  function createTabGroup(name, workspaceId, color, firstTab) {
     try {
-      const group = gBrowser.addTabGroup([], { label: name });
+      // Zen's addTabGroup needs at least one tab to know where to insert the group.
+      const tabs = firstTab ? [firstTab] : [];
+      const group = gBrowser.addTabGroup(tabs, { label: name });
       if (group) {
         group.setAttribute("zen-workspace-id", workspaceId);
         if (color) group.style.setProperty("--tab-group-color", color);
@@ -498,15 +502,17 @@
       let folder = null;
       let group = null;
 
+      const firstTab = items[0]?.tab;
+
       if (outputMode === "folders") {
         folder = findProjectFolder(name, workspaceId);
         if (!folder) folder = createZenFolder(name, workspaceId, cfg.color);
         if (!folder) {
           // Fallback to group if folders aren't supported on this build
-          group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color);
+          group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, firstTab);
         }
       } else {
-        group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color);
+        group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, firstTab);
       }
 
       if (!folder && !group) {
@@ -520,6 +526,11 @@
           if (ok) sorted++;
           else errors++;
         } else if (group) {
+          // First tab is already in the newly created group
+          if (tab === firstTab && group.contains(tab)) {
+            sorted++;
+            continue;
+          }
           const ok = moveTabToGroup(tab, group);
           if (ok) sorted++;
           else errors++;
