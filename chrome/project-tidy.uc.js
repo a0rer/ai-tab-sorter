@@ -379,7 +379,9 @@
         document.querySelector(`#zen-tabs-list[zen-workspace-id="${workspaceId}"] .zen-workspace-pinned-tabs-section`) ||
         document.querySelector(`#zen-tabs-list .zen-workspace-pinned-tabs-section`) ||
         document.querySelector(`.zen-workspace-pinned-tabs-section`) ||
-        document.querySelector(`#zen-tabs-list[zen-workspace-id="${workspaceId}"]`);
+        document.querySelector(`#zen-tabs-list[zen-workspace-id="${workspaceId}"]`) ||
+        document.getElementById("zen-tabs-list") ||
+        document.getElementById("tabbrowser-tabs");
       if (container) {
         container.appendChild(folder);
         return folder;
@@ -391,19 +393,40 @@
     return null;
   }
 
-  function createTabGroup(name, workspaceId, color, firstTab) {
+  function createTabGroup(name, workspaceId, color, tabs) {
     try {
-      // Zen's addTabGroup needs at least one tab to know where to insert the group.
-      const tabs = firstTab ? [firstTab] : [];
-      const group = gBrowser.addTabGroup(tabs, { label: name });
-      if (group) {
-        group.setAttribute("zen-workspace-id", workspaceId);
-        if (color) group.style.setProperty("--tab-group-color", color);
-        return group;
+      // Some Zen builds require contiguous tabs and a non-empty array.
+      if (tabs?.length) {
+        const group = gBrowser.addTabGroup(tabs, { label: name });
+        if (group) {
+          group.setAttribute("zen-workspace-id", workspaceId);
+          if (color) group.style.setProperty("--tab-group-color", color);
+          return group;
+        }
       }
     } catch (e) {
       console.warn("[ZenProjectTidy] addTabGroup failed:", e);
     }
+
+    // Manual DOM fallback for builds where addTabGroup is unreliable.
+    try {
+      const group = document.createXULElement?.("tab-group") || document.createElement("tab-group");
+      group.setAttribute("label", name);
+      group.setAttribute("zen-workspace-id", workspaceId);
+      if (color) group.style.setProperty("--tab-group-color", color);
+
+      if (tabs?.length && tabs[0].parentNode) {
+        const first = tabs[0];
+        first.parentNode.insertBefore(group, first);
+        for (const tab of tabs) {
+          group.appendChild(tab);
+        }
+      }
+      return group;
+    } catch (e) {
+      console.warn("[ZenProjectTidy] Manual group creation failed:", e);
+    }
+
     return null;
   }
 
@@ -502,17 +525,17 @@
       let folder = null;
       let group = null;
 
-      const firstTab = items[0]?.tab;
+      const tabs = items.map((i) => i.tab).filter(Boolean);
 
       if (outputMode === "folders") {
         folder = findProjectFolder(name, workspaceId);
         if (!folder) folder = createZenFolder(name, workspaceId, cfg.color);
         if (!folder) {
           // Fallback to group if folders aren't supported on this build
-          group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, firstTab);
+          group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, tabs);
         }
       } else {
-        group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, firstTab);
+        group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, tabs);
       }
 
       if (!folder && !group) {
@@ -520,14 +543,14 @@
         continue;
       }
 
-      for (const { tab } of items) {
+      for (const tab of tabs) {
         if (folder) {
           const ok = await pinTabAndMoveToFolder(tab, folder);
           if (ok) sorted++;
           else errors++;
         } else if (group) {
-          // First tab is already in the newly created group
-          if (tab === firstTab && group.contains(tab)) {
+          // Tabs passed to addTabGroup are already inside; DOM fallback adds them all.
+          if (group.contains(tab)) {
             sorted++;
             continue;
           }
