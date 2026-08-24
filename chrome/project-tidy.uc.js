@@ -369,7 +369,7 @@
     const apiKey = getCharPref(PREF_GEMINI_KEY, "").trim();
     if (!apiKey) throw new Error("No Gemini API key configured");
 
-    const model = getCharPref(PREF_GEMINI_MODEL, "gemini-1.5-flash-latest");
+    const model = getCharPref(PREF_GEMINI_MODEL, "gemini-flash-latest");
     const projectNames = Object.keys(projects);
     if (!projectNames.length || !tabs.length) return new Map();
 

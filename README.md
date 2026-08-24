@@ -78,7 +78,7 @@ Set these in Sine preferences or `about:config`:
 
 - `zen.project.tidy.gemini.enabled` — enable Gemini for ambiguous tabs.
 - `zen.project.tidy.gemini.key` — your Gemini API key.
-- `zen.project.tidy.gemini.model` — model name (default: `gemini-1.5-flash-latest`).
+- `zen.project.tidy.gemini.model` — model name (default: `gemini-flash-latest`).
 
 When enabled, tabs that don't confidently match locally are sent to Gemini in **one batched request**. The result is cached by hostname+title, so the same tab only costs an API call once. If Gemini fails or is disabled, the mod falls back to the local score or skips the tab.
 

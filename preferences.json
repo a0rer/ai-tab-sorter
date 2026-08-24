@@ -57,6 +57,6 @@
     "type": "string",
     "label": "Gemini model",
     "property": "zen.project.tidy.gemini.model",
-    "defaultValue": "gemini-1.5-flash-latest"
+    "defaultValue": "gemini-flash-latest"
   }
 ]
