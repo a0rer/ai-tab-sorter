@@ -273,9 +273,41 @@
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Matching
-  // ---------------------------------------------------------------------------
+  function getAllWorkspaceIds() {
+    if (!gBrowser?.tabs) return [];
+    const ids = new Set();
+    for (const tab of gBrowser.tabs) {
+      const ws = getWorkspaceId(tab);
+      if (ws) ids.add(ws);
+    }
+    return Array.from(ids);
+  }
+
+  function exportTabs() {
+    const workspaceIds = getAllWorkspaceIds();
+    const out = [];
+    for (const ws of workspaceIds) {
+      const tabs = getSortableTabs(ws);
+      if (!tabs.length) continue;
+      out.push(`Workspace: ${ws}`);
+      for (const tab of tabs) {
+        const title = getTabTitle(tab);
+        const url = getTabUrl(tab);
+        if (!title && !url) continue;
+        out.push(`- ${title || "(no title)"} | ${url || "(no url)"}`);
+      }
+    }
+    const text = out.join("\n");
+    console.log("[ZenProjectTidy] Tab list:\n" + text);
+    try {
+      const clip = Cc["@mozilla.org/widget/clipboardhelper;1"].getService(Ci.nsIClipboardHelper);
+      clip.copyString(text);
+      showToast("Tab list copied to clipboard");
+    } catch (e) {
+      showToast("Tab list logged to console");
+    }
+    return text;
+  }
 
   function buildProjectDocument(name, cfg, history) {
     const parts = [name, cfg.keywords || ""];
@@ -369,7 +401,7 @@
     const apiKey = getCharPref(PREF_GEMINI_KEY, "").trim();
     if (!apiKey) throw new Error("No Gemini API key configured");
 
-    const model = getCharPref(PREF_GEMINI_MODEL, "gemini-flash-latest");
+    const model = getCharPref(PREF_GEMINI_MODEL, "gemini-3.6-flash");
     const projectNames = Object.keys(projects);
     if (!projectNames.length || !tabs.length) return new Map();
 
@@ -443,7 +475,7 @@ ${lines.join("\n")}`,
     const payload = JSON.stringify(body);
     for (let attempt = 0; attempt <= 2; attempt++) {
       try {
-        const response = await postJson(url, payload, 15000);
+        const response = await postJson(url, payload, 60000);
         const data = JSON.parse(response);
         text = data.candidates?.[0]?.content?.parts?.[0]?.text;
         if (!text) throw new Error("Gemini returned no content");
@@ -512,10 +544,10 @@ ${lines.join("\n")}`,
       if (window.gZenFolders?.createFolder) {
         let folder;
         try {
-          // Newer Zen builds expect tabs as the second argument.
-          folder = gZenFolders.createFolder(name, tabs || [], { workspaceId });
+          // Current Zen signature: (name, workspaceId, tabs)
+          folder = gZenFolders.createFolder(name, workspaceId, tabs || []);
         } catch {
-          // Older signature: (name, workspaceId)
+          // Fallback for other signatures
           folder = gZenFolders.createFolder(name, workspaceId);
         }
         if (folder) {
@@ -791,6 +823,242 @@ ${lines.join("\n")}`,
   }
 
   // ---------------------------------------------------------------------------
+  // Cross-workspace AI project discovery
+  // ---------------------------------------------------------------------------
+
+  async function geminiDiscoverCategories(items) {
+    const apiKey = getCharPref(PREF_GEMINI_KEY, "").trim();
+    if (!apiKey) throw new Error("No Gemini API key configured");
+
+    const model = getCharPref(PREF_GEMINI_MODEL, "gemini-3.6-flash");
+
+    const lines = items.map((item, i) => {
+      const title = item.title.replace(/\s+/g, " ").trim();
+      const url = item.url;
+      return `${i}: ${title} | ${url}`;
+    });
+
+    const schema = {
+      type: "object",
+      description: "Suggested project categories for the given tabs.",
+      properties: {
+        categories: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              keywords: { type: "string" },
+              color: { type: "string" },
+              tabIndices: {
+                type: "array",
+                items: { type: "integer" },
+              },
+            },
+            required: ["name", "keywords", "tabIndices"],
+          },
+        },
+      },
+      required: ["categories"],
+    };
+
+    const body = {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `Suggest up to 8 project categories for these browser tabs. Each category should have a short lowercase name, relevant keywords separated by spaces, an optional hex color, and the indices of tabs that belong to it.
+
+Tabs:
+${lines.join("\n")}
+
+Respond with JSON only.`,
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: schema,
+        temperature: 0.2,
+      },
+    };
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+    function postJson(target, payload, timeoutMs = 60000) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", target, true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.timeout = timeoutMs;
+        xhr.ontimeout = () => reject(new Error("Gemini request timed out"));
+        xhr.onerror = () => reject(new Error(`Gemini request failed: ${xhr.statusText || "network error"}`));
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(xhr.responseText);
+          } else {
+            reject(new Error(`Gemini HTTP ${xhr.status}: ${xhr.responseText}`));
+          }
+        };
+        xhr.send(payload);
+      });
+    }
+
+    let lastError;
+    let text;
+    const payload = JSON.stringify(body);
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      try {
+        const response = await postJson(url, payload, 60000);
+        const data = JSON.parse(response);
+        text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!text) throw new Error("Gemini returned no content");
+        break;
+      } catch (e) {
+        lastError = e;
+        const isRetryable = e.message?.includes("timed out") || e.message?.includes("503") || e.message?.includes("network error");
+        if (isRetryable && attempt < 2) {
+          console.warn(`[ZenProjectTidy] Gemini ${e.message}, retrying (${attempt + 1}/2)...`);
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+          continue;
+        }
+        throw e;
+      }
+    }
+    if (!text) throw lastError || new Error("Gemini request failed");
+
+    const parsed = JSON.parse(text);
+    return (parsed.categories || []).filter((c) => c.name && Array.isArray(c.tabIndices));
+  }
+
+  async function moveTabsToProject(tabs, name, workspaceId, cfg) {
+    const outputMode = getCharPref(PREF_OUTPUT_MODE, "folders");
+    let folder = null;
+    let group = null;
+
+    if (outputMode === "folders") {
+      folder = findProjectFolder(name, workspaceId);
+      if (!folder) folder = createZenFolder(name, workspaceId, cfg.color, tabs);
+      if (!folder) {
+        group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, tabs);
+      }
+    } else {
+      group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, tabs);
+    }
+
+    if (!folder && !group) {
+      console.warn(`[ZenProjectTidy] Could not create folder/group for ${name}`);
+      return 0;
+    }
+
+    let moved = 0;
+    for (const tab of tabs) {
+      if (folder) {
+        const ok = await pinTabAndMoveToFolder(tab, folder);
+        if (ok) moved++;
+      } else if (group) {
+        if (group.contains(tab)) {
+          moved++;
+          continue;
+        }
+        const ok = moveTabToGroup(tab, group);
+        if (ok) moved++;
+      }
+    }
+    return moved;
+  }
+
+  async function discoverProjects() {
+    const apiKey = getCharPref(PREF_GEMINI_KEY, "").trim();
+    if (!apiKey) {
+      showToast("No Gemini API key configured");
+      return { discovered: 0, sorted: 0 };
+    }
+
+    const workspaceIds = getAllWorkspaceIds();
+    if (!workspaceIds.length) {
+      showToast("No workspaces found");
+      return { discovered: 0, sorted: 0 };
+    }
+
+    const items = [];
+    for (const ws of workspaceIds) {
+      for (const tab of getSortableTabs(ws)) {
+        items.push({
+          tab,
+          workspaceId: ws,
+          title: getTabTitle(tab),
+          url: getTabUrl(tab),
+        });
+      }
+    }
+
+    if (!items.length) {
+      showToast("No tabs to analyze");
+      return { discovered: 0, sorted: 0 };
+    }
+
+    console.log(`[ZenProjectTidy] Analyzing ${items.length} tabs across ${workspaceIds.length} workspaces with Gemini...`);
+
+    let categories;
+    try {
+      categories = await geminiDiscoverCategories(items);
+    } catch (e) {
+      console.error("[ZenProjectTidy] Project discovery failed:", e);
+      showToast("Project discovery failed — check console");
+      return { discovered: 0, sorted: 0 };
+    }
+
+    if (!categories.length) {
+      showToast("No categories suggested");
+      return { discovered: 0, sorted: 0 };
+    }
+
+    const names = categories.map((c) => c.name).join(", ");
+    if (!window.confirm(`Gemini suggests these categories:\n${names}\n\nCreate them and sort tabs?`)) {
+      showToast("Project discovery cancelled");
+      return { discovered: 0, sorted: 0 };
+    }
+
+    const projects = loadProjects();
+    for (const cat of categories) {
+      if (!projects[cat.name]) {
+        projects[cat.name] = {
+          keywords: cat.keywords || "",
+          domains: cat.domains || [],
+          color: cat.color || "#888888",
+        };
+      }
+    }
+    saveProjects(projects);
+
+    const byKey = {};
+    for (const cat of categories) {
+      for (const idx of cat.tabIndices) {
+        const item = items[idx];
+        if (!item) continue;
+        const key = `${item.workspaceId}|${cat.name}`;
+        byKey[key] = byKey[key] || [];
+        byKey[key].push(item.tab);
+      }
+    }
+
+    let totalSorted = 0;
+    for (const [key, tabs] of Object.entries(byKey)) {
+      const [workspaceId, name] = key.split("|");
+      const cfg = projects[name];
+      if (!cfg) continue;
+      totalSorted += await moveTabsToProject(tabs, name, workspaceId, cfg);
+    }
+
+    console.log(`[ZenProjectTidy] Discovered ${categories.length} categories, moved ${totalSorted} tabs`);
+    showToast(`Discovered ${categories.length} categories and sorted ${totalSorted} tabs`);
+    return { discovered: categories.length, sorted: totalSorted };
+  }
+
+  // ---------------------------------------------------------------------------
   // Learning from corrections
   // ---------------------------------------------------------------------------
 
@@ -838,10 +1106,12 @@ ${lines.join("\n")}`,
       </svg>
     `;
 
+    const tooltip = "Sort tabs into project folders (Shift+click to discover categories with Gemini)";
+
     if (window.MozXULElement?.parseXULToFragment) {
       try {
         const frag = window.MozXULElement.parseXULToFragment(`
-          <toolbarbutton class="project-tidy-button" tooltiptext="Sort tabs into project folders">
+          <toolbarbutton class="project-tidy-button" tooltiptext="${tooltip}">
             <hbox class="toolbarbutton-box" align="center" pack="center">
               ${svg}
             </hbox>
@@ -856,7 +1126,7 @@ ${lines.join("\n")}`,
     if (!button) {
       button = document.createElement("button");
       button.className = "project-tidy-button";
-      button.title = "Sort tabs into project folders";
+      button.title = tooltip;
       button.innerHTML = svg;
     }
 
@@ -864,7 +1134,11 @@ ${lines.join("\n")}`,
       e.stopPropagation();
       button.classList.add("sorting");
       try {
-        await sortTabs();
+        if (e.shiftKey) {
+          await discoverProjects();
+        } else {
+          await sortTabs();
+        }
       } finally {
         button.classList.remove("sorting");
       }
@@ -1012,6 +1286,8 @@ ${lines.join("\n")}`,
   // Expose a minimal API for advanced users / debugging
   window.ZenProjectTidy = {
     sortTabs,
+    discoverProjects,
+    exportTabs,
     loadProjects,
     saveProjects,
     loadHistory,

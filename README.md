@@ -61,7 +61,17 @@ Example project config:
 
 Click the sparkle button on the divider between pinned and normal tabs. Ungrouped tabs are matched to your projects and moved into folders (or groups).
 
-Right-click the button for options.
+- **Shift+click** the button to run **AI project discovery**: Gemini analyzes tabs across *all* workspaces, suggests project categories, and sorts tabs after you confirm.
+
+## Debug
+
+Open the Browser Console and run:
+
+```js
+ZenProjectTidy.exportTabs()
+```
+
+This copies a markdown list of every sortable tab to your clipboard, which is useful for debugging grouping or pasting into an AI chat.
 
 ## Learning
 
@@ -78,13 +88,13 @@ Set these in Sine preferences or `about:config`:
 
 - `zen.project.tidy.gemini.enabled` — enable Gemini for ambiguous tabs.
 - `zen.project.tidy.gemini.key` — your Gemini API key.
-- `zen.project.tidy.gemini.model` — model name (default: `gemini-flash-latest`).
+- `zen.project.tidy.gemini.model` — model name (default: `gemini-3.6-flash`).
 
 When enabled, tabs that don't confidently match locally are sent to Gemini in **one batched request**. The result is cached by hostname+title, so the same tab only costs an API call once. If Gemini fails or is disabled, the mod falls back to the local score or skips the tab.
 
 ## Limitations
 
-- Works on the current workspace only.
+- Normal sort works on the current workspace only; cross-workspace discovery requires Gemini.
 - Zen folders require a recent Zen build with folder support.
 - Matching quality depends on the keywords/examples you provide.
 - Gemini fallback requires an internet connection and a Google API key.
