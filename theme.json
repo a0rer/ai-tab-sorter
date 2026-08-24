@@ -3,7 +3,7 @@
   "name": "Zen Project Tidy",
   "description": "Sort tabs into your own project folders with a single click. No AI, fully local, learns from your corrections.",
   "scripts": {
-    "project-tidy.uc.js": {
+    "chrome/project-tidy.uc.js": {
       "include": [
         "chrome://browser/content/browser.xhtml"
       ]
