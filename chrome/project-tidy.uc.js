@@ -646,6 +646,7 @@ ${lines.join("\n")}`,
     const threshold = getIntPref(PREF_THRESHOLD, 35) / 100;
     const outputMode = getCharPref(PREF_OUTPUT_MODE, "folders");
     const tabs = getSortableTabs(workspaceId);
+    console.log(`[ZenProjectTidy] Found ${tabs.length} sortable tabs in workspace ${workspaceId}`);
 
     if (!tabs.length) {
       showToast("No tabs to sort");
@@ -707,6 +708,14 @@ ${lines.join("\n")}`,
       }
     }
 
+    console.log(
+      `[ZenProjectTidy] Plan: ${plan.length} tabs, sources:`,
+      plan.reduce((acc, item) => {
+        acc[item.source] = (acc[item.source] || 0) + 1;
+        return acc;
+      }, {})
+    );
+
     let sorted = 0;
     let skipped = tabs.length - plan.length;
     let errors = 0;
@@ -758,6 +767,7 @@ ${lines.join("\n")}`,
       }
     }
 
+    console.log(`[ZenProjectTidy] Result: sorted=${sorted}, skipped=${skipped}, errors=${errors}`);
     showToast(`Sorted ${sorted} tab${sorted === 1 ? "" : "s"} into projects`);
     return { sorted, skipped, errors };
   }
