@@ -1,6 +1,6 @@
 # Zen Project Tidy
 
-A Sine Mod for Zen Browser that sorts your tabs into **your own project folders** with one click. No AI runtime, no cloud, no external dependencies.
+A Sine Mod for Zen Browser that sorts your tabs into **your own project folders** with one click. Local-first, with an optional Gemini AI fallback for tabs that aren't a clear keyword/domain match.
 
 ## Why this exists
 
@@ -8,13 +8,15 @@ Existing tidy mods use AI to invent group names. That fails for programming work
 - A Proxmox thread on Reddit belongs to **selfhosting**, not "Reddit".
 - A GitHub issue belongs to the project it relates to, not "GitHub".
 
-Zen Project Tidy lets you define projects with keywords, domains, and example tabs. It matches tabs locally and moves them into Zen folders (or tab groups).
+Zen Project Tidy lets you define projects with keywords, domains, and example tabs. It matches tabs locally first and moves them into Zen folders (or tab groups). For ambiguous tabs, you can optionally enable Gemini to decide based on title and URL.
 
 ## Features
 
 - One sparkle button on the pinned-tabs divider
 - Project-defined sorting, not AI-discovered
-- Pure client-side TF-IDF + keyword matching
+- Local TF-IDF + keyword/domain matching
+- Optional Gemini AI fallback for ambiguous tabs
+- Caches Gemini decisions locally so repeat sorts are free
 - Learns from corrections (optional)
 - Falls back to tab groups if Zen folders are unavailable
 - No `browser.ml.enabled` required
@@ -70,11 +72,22 @@ If learning is enabled, the mod records which tabs you manually move into or out
 - **Folders** (default): pins tabs and places them in `zen-folder` containers.
 - **Groups**: uses native Zen tab groups instead.
 
+## Optional Gemini fallback
+
+Set these in Sine preferences or `about:config`:
+
+- `zen.project.tidy.gemini.enabled` — enable Gemini for ambiguous tabs.
+- `zen.project.tidy.gemini.key` — your Gemini API key.
+- `zen.project.tidy.gemini.model` — model name (default: `gemini-1.5-flash-latest`).
+
+When enabled, tabs that don't confidently match locally are sent to Gemini in **one batched request**. The result is cached by hostname+title, so the same tab only costs an API call once. If Gemini fails or is disabled, the mod falls back to the local score or skips the tab.
+
 ## Limitations
 
 - Works on the current workspace only.
 - Zen folders require a recent Zen build with folder support.
 - Matching quality depends on the keywords/examples you provide.
+- Gemini fallback requires an internet connection and a Google API key.
 
 ## License
 

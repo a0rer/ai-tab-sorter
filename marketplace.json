@@ -2,7 +2,7 @@
   {
     "id": "zen-project-tidy",
     "name": "Zen Project Tidy",
-    "description": "Sort tabs into your own project folders with a single click. No AI, fully local, learns from your corrections.",
+    "description": "Sort tabs into your own project folders with a single click. Local-first keyword/domain matching with optional Gemini AI fallback for ambiguous tabs.",
     "author": "a0rer",
     "version": "0.1.0",
     "url": "https://github.com/a0rer/ai-tab-sorter",

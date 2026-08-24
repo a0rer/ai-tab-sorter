@@ -40,5 +40,23 @@
     "label": "Projects JSON",
     "property": "zen.project.tidy.projects",
     "defaultValue": "{\"selfhosting\":{\"keywords\":\"proxmox truenas pfsense homelab selfhosted server vm docker\",\"domains\":[\"reddit.com/r/selfhosted\",\"reddit.com/r/homelab\"],\"color\":\"#ff8844\"},\"obsidian portfolio\":{\"keywords\":\"obsidian markdown portfolio website cv resume\",\"domains\":[],\"color\":\"#4488ff\"}}"
+  },
+  {
+    "type": "checkbox",
+    "label": "Use Gemini for ambiguous tabs",
+    "property": "zen.project.tidy.gemini.enabled",
+    "defaultValue": false
+  },
+  {
+    "type": "text",
+    "label": "Gemini API key",
+    "property": "zen.project.tidy.gemini.key",
+    "defaultValue": ""
+  },
+  {
+    "type": "text",
+    "label": "Gemini model",
+    "property": "zen.project.tidy.gemini.model",
+    "defaultValue": "gemini-1.5-flash-latest"
   }
 ]

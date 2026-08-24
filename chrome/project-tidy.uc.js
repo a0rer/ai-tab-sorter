@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name          Zen Project Tidy
-// @description   Sort tabs into user-defined project folders with local matching. No AI runtime required.
+// @description   Sort tabs into user-defined project folders with local-first matching and optional Gemini AI fallback.
 // @ignorecache
 // ==/UserScript==
 
@@ -14,6 +14,12 @@
   const PREF_PROJECTS = "zen.project.tidy.projects";
   const PREF_HISTORY = "zen.project.tidy.history";
   const PREF_OUTPUT_MODE = "zen.project.tidy.outputMode";
+  const PREF_GEMINI_ENABLED = "zen.project.tidy.gemini.enabled";
+  const PREF_GEMINI_KEY = "zen.project.tidy.gemini.key";
+  const PREF_GEMINI_MODEL = "zen.project.tidy.gemini.model";
+  const PREF_GEMINI_CACHE = "zen.project.tidy.gemini.cache";
+
+  const MAX_GEMINI_CACHE = 300;
 
   const DEFAULT_PROJECTS = {
     selfhosting: {
@@ -112,6 +118,41 @@
     setCharPref(PREF_HISTORY, JSON.stringify(history));
   }
 
+  function loadGeminiCache() {
+    const raw = getCharPref(PREF_GEMINI_CACHE, "{}");
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+
+  function saveGeminiCache(cache) {
+    const keys = Object.keys(cache);
+    if (keys.length > MAX_GEMINI_CACHE) {
+      const toRemove = keys.length - MAX_GEMINI_CACHE;
+      for (let i = 0; i < toRemove; i++) {
+        delete cache[keys[i]];
+      }
+    }
+    setCharPref(PREF_GEMINI_CACHE, JSON.stringify(cache));
+  }
+
+  function cacheKey(tab) {
+    try {
+      const u = new URL(getTabUrl(tab));
+      const host = u.hostname.toLowerCase();
+      const title = getTabTitle(tab)
+        .toLowerCase()
+        .replace(/[^\w\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      return `${host}|${title.slice(0, 80)}`;
+    } catch {
+      return getTabTitle(tab).toLowerCase().trim().slice(0, 80) || "unknown";
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Text utilities
   // ---------------------------------------------------------------------------
@@ -142,30 +183,30 @@
     return freq;
   }
 
-  function computeTfIdf(docs) {
-    const docCount = docs.length;
-    const idf = {};
-    const tfDocs = docs.map((doc) => {
+  function tokenizeAndTf(docs) {
+    return docs.map((doc) => {
       const tokens = tokenize(doc);
       return { tokens, tf: termFrequency(tokens) };
     });
+  }
 
-    const allTerms = new Set();
-    for (const { tokens } of tfDocs) {
+  function computeTfIdfVectors(tokenizedDocs) {
+    const docCount = tokenizedDocs.length || 1;
+    const df = {};
+    for (const { tokens } of tokenizedDocs) {
       for (const t of new Set(tokens)) {
-        allTerms.add(t);
-        idf[t] = (idf[t] || 0) + 1;
+        df[t] = (df[t] || 0) + 1;
       }
     }
-
-    for (const t of allTerms) {
-      idf[t] = Math.log(docCount / (idf[t] || 1));
+    const idf = {};
+    for (const t of Object.keys(df)) {
+      idf[t] = Math.log(docCount / df[t]);
     }
-
-    return tfDocs.map(({ tf }) => {
+    return tokenizedDocs.map(({ tf }) => {
       const vec = {};
-      for (const t of allTerms) {
-        vec[t] = (tf[t] || 0) * (idf[t] || 0);
+      for (const t of Object.keys(idf)) {
+        const v = (tf[t] || 0) * idf[t];
+        if (v !== 0) vec[t] = v;
       }
       return vec;
     });
@@ -260,67 +301,149 @@
     return map;
   }
 
-  function precomputeProjectVectors(projects, history) {
-    const docs = [];
-    const names = [];
-    for (const [name, cfg] of Object.entries(projects)) {
-      docs.push(buildProjectDocument(name, cfg, history));
-      names.push(name);
-    }
-    const vectors = computeTfIdf(docs);
-    return names.map((name, i) => ({ name, vector: vectors[i] }));
-  }
+  function scoreAllTabs(tabs, projects, history) {
+    const projectEntries = Object.entries(projects);
+    const projectDocs = projectEntries.map(([name, cfg]) =>
+      buildProjectDocument(name, cfg, history)
+    );
+    const tabDocs = tabs.map(buildDocument);
+    const allDocs = [...projectDocs, ...tabDocs];
+    const allVectors = computeTfIdfVectors(tokenizeAndTf(allDocs));
+    const projectVectors = allVectors.slice(0, projectDocs.length);
+    const tabVectors = allVectors.slice(projectDocs.length);
 
-  function scoreTab(tab, projectVectors, projects, history) {
-    const tabDoc = buildDocument(tab);
-    const tabVec = computeTfIdf([tabDoc])[0];
-    const url = getTabUrl(tab).toLowerCase();
-    const tabTokens = new Set(tokenize(tabDoc));
     const keywordSets = extractKeywordSet(projects);
+    const projectNames = projectEntries.map(([name]) => name);
+    const results = new Map();
 
-    const scores = [];
-    for (const { name, vector } of projectVectors) {
-      let score = cosineSimilarity(tabVec, vector);
+    for (let i = 0; i < tabs.length; i++) {
+      const tab = tabs[i];
+      const tabVec = tabVectors[i];
+      const tabDoc = tabDocs[i];
+      const tabTokens = new Set(tokenize(tabDoc));
+      const url = getTabUrl(tab).toLowerCase();
+      const scores = [];
 
-      // Boost literal keyword matches in title/URL
-      const keywords = keywordSets[name];
-      let keywordHits = 0;
-      for (const kw of keywords) {
-        if (tabTokens.has(kw) || url.includes(kw)) keywordHits++;
+      for (let p = 0; p < projectVectors.length; p++) {
+        const name = projectNames[p];
+        const vec = projectVectors[p];
+        let score = cosineSimilarity(tabVec, vec);
+
+        // Boost literal keyword matches in title/URL
+        const keywords = keywordSets[name];
+        let keywordHits = 0;
+        for (const kw of keywords) {
+          if (tabTokens.has(kw) || url.includes(kw)) keywordHits++;
+        }
+        score += Math.min(keywordHits * 0.25, 0.75);
+
+        // Boost exact domain/path matches
+        const domains = projects[name].domains || [];
+        for (const d of domains) {
+          const dl = d.toLowerCase();
+          if (url.includes(dl)) score += 0.45;
+          else if (dl.includes("/") && url.includes(dl.split("/")[0])) score += 0.12;
+        }
+
+        // Penalize negative examples
+        const negatives = history[name]?.negatives || [];
+        for (const neg of negatives) {
+          const negTokens = new Set(tokenize(neg));
+          let overlap = 0;
+          for (const t of tabTokens) if (negTokens.has(t)) overlap++;
+          if (overlap >= 2) score -= 0.2;
+          else if (overlap === 1) score -= 0.08;
+        }
+
+        scores.push({ name, score });
       }
-      score += Math.min(keywordHits * 0.25, 0.75);
 
-      // Boost exact domain/path matches
-      const domains = projects[name].domains || [];
-      for (const d of domains) {
-        const dl = d.toLowerCase();
-        if (url.includes(dl)) score += 0.45;
-        else if (dl.includes("/") && url.includes(dl.split("/")[0])) score += 0.12;
-      }
-
-      // Penalize negative examples
-      const negatives = history[name]?.negatives || [];
-      for (const neg of negatives) {
-        const negTokens = new Set(tokenize(neg));
-        let overlap = 0;
-        for (const t of tabTokens) if (negTokens.has(t)) overlap++;
-        if (overlap >= 2) score -= 0.2;
-        else if (overlap === 1) score -= 0.08;
-      }
-
-      scores.push({ name, score });
+      scores.sort((a, b) => b.score - a.score);
+      results.set(tab, scores);
     }
 
-    scores.sort((a, b) => b.score - a.score);
-    return scores;
+    return results;
   }
 
-  function findBestProject(tab, projectVectors, projects, history, threshold) {
-    const scores = scoreTab(tab, projectVectors, projects, history);
-    if (!scores.length) return null;
-    const best = scores[0];
-    if (best.score < threshold) return null;
-    return best;
+  async function geminiClassifyTabs(tabs, projects) {
+    const apiKey = getCharPref(PREF_GEMINI_KEY, "").trim();
+    if (!apiKey) throw new Error("No Gemini API key configured");
+
+    const model = getCharPref(PREF_GEMINI_MODEL, "gemini-1.5-flash-latest");
+    const projectNames = Object.keys(projects);
+    if (!projectNames.length || !tabs.length) return new Map();
+
+    const schema = {
+      type: "object",
+      description:
+        "Maps each tab index to the best matching project name, or an empty string if none match.",
+      properties: {},
+      required: [],
+    };
+    for (let i = 0; i < tabs.length; i++) {
+      schema.properties[String(i)] = {
+        type: "string",
+        enum: [...projectNames, ""],
+      };
+      schema.required.push(String(i));
+    }
+
+    const lines = tabs.map((tab, i) => {
+      const title = getTabTitle(tab).replace(/\s+/g, " ").trim();
+      const url = getTabUrl(tab);
+      return `${i}: ${title} | ${url}`;
+    });
+
+    const body = {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `Classify each browser tab into one of these projects: ${projectNames.join(", ")}.
+Use the title and URL. Respond with a JSON object mapping each number to a project name, or an empty string if no project fits.
+
+Tabs:
+${lines.join("\n")}`,
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: schema,
+        temperature: 0.1,
+      },
+    };
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const err = await res.text().catch(() => "");
+      throw new Error(`Gemini HTTP ${res.status}: ${err}`);
+    }
+
+    const data = await res.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error("Gemini returned no content");
+
+    const parsed = JSON.parse(text);
+    const map = new Map();
+    for (const [idxStr, name] of Object.entries(parsed)) {
+      const idx = parseInt(idxStr, 10);
+      if (Number.isNaN(idx) || idx < 0 || idx >= tabs.length) continue;
+      if (name && projectNames.includes(String(name))) {
+        map.set(tabs[idx], String(name));
+      } else {
+        map.set(tabs[idx], null);
+      }
+    }
+    return map;
   }
 
   // ---------------------------------------------------------------------------
@@ -501,12 +624,58 @@
       return { sorted: 0, skipped: 0, errors: 0 };
     }
 
-    const projectVectors = precomputeProjectVectors(projects, history);
+    const localScores = scoreAllTabs(tabs, projects, history);
+    const geminiEnabled = getBoolPref(PREF_GEMINI_ENABLED, false);
+    const geminiCache = loadGeminiCache();
+
     const plan = [];
+    const ambiguousTabs = [];
+
     for (const tab of tabs) {
-      const best = findBestProject(tab, projectVectors, projects, history, threshold);
-      if (best) {
-        plan.push({ tab, project: best.name, score: best.score });
+      const scores = localScores.get(tab);
+      const best = scores?.[0];
+      const second = scores?.[1];
+      const margin = second ? best.score - second.score : 1;
+      const confident = best && best.score >= threshold && margin >= 0.12;
+
+      if (confident) {
+        plan.push({ tab, project: best.name, score: best.score, source: "local" });
+        continue;
+      }
+
+      const key = cacheKey(tab);
+      if (geminiCache[key] !== undefined) {
+        const cached = geminiCache[key];
+        if (cached && projectNames.includes(cached)) {
+          plan.push({ tab, project: cached, score: best?.score ?? 0, source: "cache" });
+        }
+        continue;
+      }
+
+      if (geminiEnabled) {
+        ambiguousTabs.push(tab);
+      }
+    }
+
+    if (ambiguousTabs.length) {
+      try {
+        const geminiResults = await geminiClassifyTabs(ambiguousTabs, projects);
+        for (const [tab, project] of geminiResults.entries()) {
+          geminiCache[cacheKey(tab)] = project;
+          if (project && projectNames.includes(project)) {
+            plan.push({ tab, project, score: 0, source: "gemini" });
+          }
+        }
+        saveGeminiCache(geminiCache);
+      } catch (e) {
+        console.error("[ZenProjectTidy] Gemini classification failed:", e);
+        for (const tab of ambiguousTabs) {
+          const scores = localScores.get(tab);
+          const best = scores?.[0];
+          if (best && best.score >= threshold * 0.6) {
+            plan.push({ tab, project: best.name, score: best.score, source: "local-fallback" });
+          }
+        }
       }
     }
 
