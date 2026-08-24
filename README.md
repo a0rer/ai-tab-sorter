@@ -24,7 +24,7 @@ Zen Project Tidy lets you define projects with keywords, domains, and example ta
 1. Install [Sine](https://github.com/CosmoCreeper/Sine) in Zen Browser.
 2. Add this repository to Sine:
    ```
-   https://github.com/aorer/ai-tab-sorter
+   https://github.com/a0rer/ai-tab-sorter
    ```
 3. Enable the mod in `about:preferences` → Zen Mods.
 
