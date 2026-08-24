@@ -1,0 +1,13 @@
+[
+  {
+    "id": "zen-project-tidy",
+    "name": "Zen Project Tidy",
+    "description": "Sort tabs into your own project folders with a single click. No AI, fully local, learns from your corrections.",
+    "author": "aorer",
+    "version": "0.1.0",
+    "url": "https://github.com/aorer/ai-tab-sorter",
+    "branch": "main",
+    "image": "",
+    "tags": ["Zen Browser", "Tab Folders", "Project Organization", "Tab Sorting", "Local"]
+  }
+]
