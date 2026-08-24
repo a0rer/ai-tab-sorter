@@ -1,0 +1,44 @@
+[
+  {
+    "type": "checkbox",
+    "label": "Enable Zen Project Tidy",
+    "property": "zen.project.tidy.enabled",
+    "defaultValue": true
+  },
+  {
+    "type": "checkbox",
+    "label": "Show sparkle button on divider",
+    "property": "zen.project.tidy.showButton",
+    "defaultValue": true
+  },
+  {
+    "type": "checkbox",
+    "label": "Learn from manual corrections",
+    "property": "zen.project.tidy.learning",
+    "defaultValue": true
+  },
+  {
+    "type": "integer",
+    "label": "Match threshold (0-100)",
+    "property": "zen.project.tidy.threshold",
+    "defaultValue": 35,
+    "min": 0,
+    "max": 100
+  },
+  {
+    "type": "dropdown",
+    "label": "Output mode",
+    "property": "zen.project.tidy.outputMode",
+    "defaultValue": "folders",
+    "options": [
+      { "label": "Zen folders (pinned)", "value": "folders" },
+      { "label": "Tab groups", "value": "groups" }
+    ]
+  },
+  {
+    "type": "text",
+    "label": "Projects JSON",
+    "property": "zen.project.tidy.projects",
+    "defaultValue": "{\"selfhosting\":{\"keywords\":\"proxmox truenas pfsense homelab selfhosted server vm docker\",\"domains\":[\"reddit.com/r/selfhosted\",\"reddit.com/r/homelab\"],\"color\":\"#ff8844\"},\"obsidian portfolio\":{\"keywords\":\"obsidian markdown portfolio website cv resume\",\"domains\":[],\"color\":\"#4488ff\"}}"
+  }
+]
