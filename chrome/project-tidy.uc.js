@@ -419,33 +419,41 @@ ${lines.join("\n")}`,
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
+    function postJson(target, payload, timeoutMs = 15000) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", target, true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.timeout = timeoutMs;
+        xhr.ontimeout = () => reject(new Error("Gemini request timed out"));
+        xhr.onerror = () => reject(new Error(`Gemini request failed: ${xhr.statusText || "network error"}`));
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(xhr.responseText);
+          } else {
+            reject(new Error(`Gemini HTTP ${xhr.status}: ${xhr.responseText}`));
+          }
+        };
+        xhr.send(payload);
+      });
+    }
+
     let lastError;
     let text;
+    const payload = JSON.stringify(body);
     for (let attempt = 0; attempt <= 2; attempt++) {
       try {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (!text) throw new Error("Gemini returned no content");
-          break;
-        }
-
-        const err = await res.text().catch(() => "");
-        lastError = new Error(`Gemini HTTP ${res.status}: ${err}`);
-        if (res.status === 503 && attempt < 2) {
-          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-          continue;
-        }
-        throw lastError;
+        const response = await postJson(url, payload, 15000);
+        const data = JSON.parse(response);
+        text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!text) throw new Error("Gemini returned no content");
+        break;
       } catch (e) {
-        if (e.message?.includes("503") && attempt < 2) {
-          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        lastError = e;
+        const isRetryable = e.message?.includes("timed out") || e.message?.includes("503") || e.message?.includes("network error");
+        if (isRetryable && attempt < 2) {
+          console.warn(`[ZenProjectTidy] Gemini ${e.message}, retrying (${attempt + 1}/2)...`);
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
           continue;
         }
         throw e;
