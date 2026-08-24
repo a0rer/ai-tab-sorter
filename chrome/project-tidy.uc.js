@@ -626,150 +626,160 @@ ${lines.join("\n")}`,
   // ---------------------------------------------------------------------------
 
   async function sortTabs(options = {}) {
-    const enabled = getBoolPref(PREF_ENABLED, true);
-    if (!enabled) return { sorted: 0, skipped: 0, errors: 0 };
+    try {
+      const enabled = getBoolPref(PREF_ENABLED, true);
+      if (!enabled) return { sorted: 0, skipped: 0, errors: 0 };
 
-    const workspaceId = gZenWorkspaces?.activeWorkspace;
-    if (!workspaceId) {
-      showToast("No active workspace");
-      return { sorted: 0, skipped: 0, errors: 0 };
-    }
-
-    const projects = loadProjects();
-    const projectNames = Object.keys(projects);
-    if (!projectNames.length) {
-      showToast("No projects defined");
-      return { sorted: 0, skipped: 0, errors: 0 };
-    }
-
-    const history = loadHistory();
-    const threshold = getIntPref(PREF_THRESHOLD, 35) / 100;
-    const outputMode = getCharPref(PREF_OUTPUT_MODE, "folders");
-    const tabs = getSortableTabs(workspaceId);
-    console.log(`[ZenProjectTidy] Found ${tabs.length} sortable tabs in workspace ${workspaceId}`);
-
-    if (!tabs.length) {
-      showToast("No tabs to sort");
-      return { sorted: 0, skipped: 0, errors: 0 };
-    }
-
-    const localScores = scoreAllTabs(tabs, projects, history);
-    const geminiEnabled = getBoolPref(PREF_GEMINI_ENABLED, false);
-    const geminiCache = loadGeminiCache();
-
-    const plan = [];
-    const ambiguousTabs = [];
-
-    for (const tab of tabs) {
-      const scores = localScores.get(tab);
-      const best = scores?.[0];
-      const second = scores?.[1];
-      const margin = second ? best.score - second.score : 1;
-      const confident = best && best.score >= threshold && margin >= 0.12;
-
-      if (confident) {
-        plan.push({ tab, project: best.name, score: best.score, source: "local" });
-        continue;
+      const workspaceId = gZenWorkspaces?.activeWorkspace;
+      if (!workspaceId) {
+        showToast("No active workspace");
+        return { sorted: 0, skipped: 0, errors: 0 };
       }
 
-      const key = cacheKey(tab);
-      if (geminiCache[key] !== undefined) {
-        const cached = geminiCache[key];
-        if (cached && projectNames.includes(cached)) {
-          plan.push({ tab, project: cached, score: best?.score ?? 0, source: "cache" });
-        }
-        continue;
+      const projects = loadProjects();
+      const projectNames = Object.keys(projects);
+      if (!projectNames.length) {
+        showToast("No projects defined");
+        return { sorted: 0, skipped: 0, errors: 0 };
       }
 
-      if (geminiEnabled) {
-        ambiguousTabs.push(tab);
-      }
-    }
+      const history = loadHistory();
+      const threshold = getIntPref(PREF_THRESHOLD, 35) / 100;
+      const outputMode = getCharPref(PREF_OUTPUT_MODE, "folders");
+      const tabs = getSortableTabs(workspaceId);
+      console.log(`[ZenProjectTidy] Found ${tabs.length} sortable tabs in workspace ${workspaceId}`);
 
-    if (ambiguousTabs.length) {
-      try {
-        const geminiResults = await geminiClassifyTabs(ambiguousTabs, projects);
-        for (const [tab, project] of geminiResults.entries()) {
-          geminiCache[cacheKey(tab)] = project;
-          if (project && projectNames.includes(project)) {
-            plan.push({ tab, project, score: 0, source: "gemini" });
-          }
-        }
-        saveGeminiCache(geminiCache);
-      } catch (e) {
-        console.error("[ZenProjectTidy] Gemini classification failed:", e);
-        for (const tab of ambiguousTabs) {
-          const scores = localScores.get(tab);
-          const best = scores?.[0];
-          if (best && best.score >= threshold * 0.6) {
-            plan.push({ tab, project: best.name, score: best.score, source: "local-fallback" });
-          }
-        }
-      }
-    }
-
-    console.log(
-      `[ZenProjectTidy] Plan: ${plan.length} tabs, sources:`,
-      plan.reduce((acc, item) => {
-        acc[item.source] = (acc[item.source] || 0) + 1;
-        return acc;
-      }, {})
-    );
-
-    let sorted = 0;
-    let skipped = tabs.length - plan.length;
-    let errors = 0;
-
-    const byProject = {};
-    for (const item of plan) {
-      byProject[item.project] = byProject[item.project] || [];
-      byProject[item.project].push(item);
-    }
-
-    for (const [name, items] of Object.entries(byProject)) {
-      const cfg = projects[name];
-      let folder = null;
-      let group = null;
-
-      const tabs = items.map((i) => i.tab).filter(Boolean);
-
-      if (outputMode === "folders") {
-        folder = findProjectFolder(name, workspaceId);
-        if (!folder) folder = createZenFolder(name, workspaceId, cfg.color, tabs);
-        if (!folder) {
-          // Fallback to group if folders aren't supported on this build
-          group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, tabs);
-        }
-      } else {
-        group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, tabs);
+      if (!tabs.length) {
+        showToast("No tabs to sort");
+        return { sorted: 0, skipped: 0, errors: 0 };
       }
 
-      if (!folder && !group) {
-        errors += items.length;
-        continue;
-      }
+      console.log("[ZenProjectTidy] Scoring tabs...");
+      const localScores = scoreAllTabs(tabs, projects, history);
+      console.log("[ZenProjectTidy] Scoring complete");
+
+      const geminiEnabled = getBoolPref(PREF_GEMINI_ENABLED, false);
+      const geminiCache = loadGeminiCache();
+
+      const plan = [];
+      const ambiguousTabs = [];
 
       for (const tab of tabs) {
-        if (folder) {
-          const ok = await pinTabAndMoveToFolder(tab, folder);
-          if (ok) sorted++;
-          else errors++;
-        } else if (group) {
-          // Tabs passed to addTabGroup are already inside; DOM fallback adds them all.
-          if (group.contains(tab)) {
-            sorted++;
-            continue;
+        const scores = localScores.get(tab);
+        const best = scores?.[0];
+        const second = scores?.[1];
+        const margin = second ? best.score - second.score : 1;
+        const confident = best && best.score >= threshold && margin >= 0.12;
+
+        if (confident) {
+          plan.push({ tab, project: best.name, score: best.score, source: "local" });
+          continue;
+        }
+
+        const key = cacheKey(tab);
+        if (geminiCache[key] !== undefined) {
+          const cached = geminiCache[key];
+          if (cached && projectNames.includes(cached)) {
+            plan.push({ tab, project: cached, score: best?.score ?? 0, source: "cache" });
           }
-          const ok = moveTabToGroup(tab, group);
-          if (ok) sorted++;
-          else errors++;
+          continue;
+        }
+
+        if (geminiEnabled) {
+          ambiguousTabs.push(tab);
         }
       }
-    }
 
-    console.log(`[ZenProjectTidy] Result: sorted=${sorted}, skipped=${skipped}, errors=${errors}`);
-    showToast(`Sorted ${sorted} tab${sorted === 1 ? "" : "s"} into projects`);
-    return { sorted, skipped, errors };
+      if (ambiguousTabs.length) {
+        console.log(`[ZenProjectTidy] ${ambiguousTabs.length} ambiguous tabs; calling Gemini...`);
+        try {
+          const geminiResults = await geminiClassifyTabs(ambiguousTabs, projects);
+          for (const [tab, project] of geminiResults.entries()) {
+            geminiCache[cacheKey(tab)] = project;
+            if (project && projectNames.includes(project)) {
+              plan.push({ tab, project, score: 0, source: "gemini" });
+            }
+          }
+          saveGeminiCache(geminiCache);
+        } catch (e) {
+          console.error("[ZenProjectTidy] Gemini classification failed:", e);
+          for (const tab of ambiguousTabs) {
+            const scores = localScores.get(tab);
+            const best = scores?.[0];
+            if (best && best.score >= threshold * 0.6) {
+              plan.push({ tab, project: best.name, score: best.score, source: "local-fallback" });
+            }
+          }
+        }
+      }
+
+      console.log(
+        `[ZenProjectTidy] Plan: ${plan.length} tabs, sources:`,
+        plan.reduce((acc, item) => {
+          acc[item.source] = (acc[item.source] || 0) + 1;
+          return acc;
+        }, {})
+      );
+
+      let sorted = 0;
+      let skipped = tabs.length - plan.length;
+      let errors = 0;
+
+      const byProject = {};
+      for (const item of plan) {
+        byProject[item.project] = byProject[item.project] || [];
+        byProject[item.project].push(item);
+      }
+
+      for (const [name, items] of Object.entries(byProject)) {
+        const cfg = projects[name];
+        let folder = null;
+        let group = null;
+
+        const tabs = items.map((i) => i.tab).filter(Boolean);
+
+        if (outputMode === "folders") {
+          folder = findProjectFolder(name, workspaceId);
+          if (!folder) folder = createZenFolder(name, workspaceId, cfg.color, tabs);
+          if (!folder) {
+            // Fallback to group if folders aren't supported on this build
+            group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, tabs);
+          }
+        } else {
+          group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, tabs);
+        }
+
+        if (!folder && !group) {
+          errors += items.length;
+          continue;
+        }
+
+        for (const tab of tabs) {
+          if (folder) {
+            const ok = await pinTabAndMoveToFolder(tab, folder);
+            if (ok) sorted++;
+            else errors++;
+          } else if (group) {
+            // Tabs passed to addTabGroup are already inside; DOM fallback adds them all.
+            if (group.contains(tab)) {
+              sorted++;
+              continue;
+            }
+            const ok = moveTabToGroup(tab, group);
+            if (ok) sorted++;
+            else errors++;
+          }
+        }
+      }
+
+      console.log(`[ZenProjectTidy] Result: sorted=${sorted}, skipped=${skipped}, errors=${errors}`);
+      showToast(`Sorted ${sorted} tab${sorted === 1 ? "" : "s"} into projects`);
+      return { sorted, skipped, errors };
+    } catch (e) {
+      console.error("[ZenProjectTidy] Unexpected sortTabs error:", e);
+      showToast("Sort failed — check console");
+      return { sorted: 0, skipped: 0, errors: 0 };
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -914,7 +924,19 @@ ${lines.join("\n")}`,
   function addButtonsToSeparators() {
     if (!getBoolPref(PREF_SHOW_BUTTON, true)) return;
     const separators = document.querySelectorAll(".pinned-tabs-container-separator");
-    separators.forEach(ensureButton);
+    if (separators.length) {
+      separators.forEach(ensureButton);
+      return;
+    }
+
+    // Fallback for Zen builds where the divider class differs.
+    const fallback =
+      document.querySelector(".zen-workspace-tabs-section") ||
+      document.getElementById("zen-tabs-list") ||
+      document.getElementById("tabbrowser-tabs");
+    if (fallback && !fallback.querySelector(".project-tidy-button")) {
+      ensureButton(fallback);
+    }
   }
 
   // ---------------------------------------------------------------------------
