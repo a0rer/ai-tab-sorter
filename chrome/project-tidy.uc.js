@@ -383,7 +383,8 @@
     for (let i = 0; i < tabs.length; i++) {
       schema.properties[String(i)] = {
         type: "string",
-        enum: [...projectNames, ""],
+        enum: projectNames,
+        nullable: true,
       };
       schema.required.push(String(i));
     }
@@ -478,10 +479,17 @@ ${lines.join("\n")}`,
     return null;
   }
 
-  function createZenFolder(name, workspaceId, color) {
+  function createZenFolder(name, workspaceId, color, tabs) {
     try {
       if (window.gZenFolders?.createFolder) {
-        const folder = gZenFolders.createFolder(name, workspaceId);
+        let folder;
+        try {
+          // Newer Zen builds expect tabs as the second argument.
+          folder = gZenFolders.createFolder(name, tabs || [], { workspaceId });
+        } catch {
+          // Older signature: (name, workspaceId)
+          folder = gZenFolders.createFolder(name, workspaceId);
+        }
         if (folder) {
           if (color) folder.style.setProperty("--folder-color", color);
           return folder;
@@ -698,7 +706,7 @@ ${lines.join("\n")}`,
 
       if (outputMode === "folders") {
         folder = findProjectFolder(name, workspaceId);
-        if (!folder) folder = createZenFolder(name, workspaceId, cfg.color);
+        if (!folder) folder = createZenFolder(name, workspaceId, cfg.color, tabs);
         if (!folder) {
           // Fallback to group if folders aren't supported on this build
           group = findProjectGroup(name, workspaceId) || createTabGroup(name, workspaceId, cfg.color, tabs);
@@ -817,6 +825,62 @@ ${lines.join("\n")}`,
     separator.appendChild(button);
   }
 
+  function injectFallbackStyles() {
+    if (document.getElementById("project-tidy-styles")) return;
+    const style = document.createElement("style");
+    style.id = "project-tidy-styles";
+    style.textContent = `
+      :root {
+        --zen-project-tidy-button-size: 20px;
+        --zen-project-tidy-button-opacity: 0.6;
+        --zen-project-tidy-button-hover-opacity: 1;
+      }
+      .pinned-tabs-container-separator { position: relative; }
+      .project-tidy-button {
+        appearance: none;
+        border: none;
+        background: transparent;
+        width: var(--zen-project-tidy-button-size);
+        height: var(--zen-project-tidy-button-size);
+        padding: 2px;
+        margin: 0 4px;
+        border-radius: var(--border-radius-small, 4px);
+        cursor: pointer;
+        opacity: var(--zen-project-tidy-button-opacity);
+        transition: opacity 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .project-tidy-button:hover {
+        opacity: var(--zen-project-tidy-button-hover-opacity);
+        background-color: var(--zen-colors-hover, rgba(127, 127, 127, 0.2));
+      }
+      .project-tidy-button:active { transform: scale(0.92); }
+      .project-tidy-button svg { width: 100%; height: 100%; fill: currentColor; pointer-events: none; }
+      .project-tidy-button.sorting svg { animation: project-tidy-spin 0.8s ease-in-out infinite; }
+      @keyframes project-tidy-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      .project-tidy-toast {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        padding: 10px 16px;
+        border-radius: var(--border-radius-medium, 8px);
+        background: var(--zen-colors-tertiary, #2a2a2a);
+        color: var(--zen-colors-text, #fff);
+        font-size: 13px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+        z-index: 10000;
+        opacity: 0;
+        transform: translateY(12px);
+        transition: opacity 0.25s ease, transform 0.25s ease;
+        pointer-events: none;
+      }
+      .project-tidy-toast.visible { opacity: 1; transform: translateY(0); }
+    `;
+    document.head.appendChild(style);
+  }
+
   function addButtonsToSeparators() {
     if (!getBoolPref(PREF_SHOW_BUTTON, true)) return;
     const separators = document.querySelectorAll(".pinned-tabs-container-separator");
@@ -852,6 +916,7 @@ ${lines.join("\n")}`,
     if (!getBoolPref(PREF_ENABLED, true)) return;
     await waitForDependencies();
 
+    injectFallbackStyles();
     addButtonsToSeparators();
 
     const observer = new MutationObserver(() => {
