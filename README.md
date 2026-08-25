@@ -14,9 +14,10 @@ Zen Project Tidy lets you define projects with keywords, domains, and example ta
 
 - One sparkle button on the pinned-tabs divider
 - Project-defined sorting, not AI-discovered
-- Local TF-IDF + keyword/domain matching
-- Optional Gemini AI fallback for ambiguous tabs
-- Caches Gemini decisions locally so repeat sorts are free
+- Local TF-IDF + keyword/domain/example matching
+- Structured URL signals for GitHub, Reddit, StackOverflow, etc.
+- Optional Gemini or Ollama AI fallback for ambiguous tabs
+- Caches AI decisions locally so repeat sorts are free
 - Learns from corrections (optional)
 - Falls back to tab groups if Zen folders are unavailable
 - No `browser.ml.enabled` required
@@ -39,14 +40,39 @@ Example project config:
 ```json
 {
   "selfhosting": {
-    "keywords": "proxmox truenas pfsense homelab selfhosted server vm docker",
+    "keywords": "proxmox truenas pfsense homelab selfhosted server vm docker unraid nas kvm virtualization",
     "domains": ["reddit.com/r/selfhosted", "reddit.com/r/homelab"],
+    "examples": [
+      "Proxmox VE - Dashboard",
+      "TrueNAS Scale",
+      "reddit.com/r/selfhosted"
+    ],
     "color": "#ff8844"
+  },
+  "programming": {
+    "keywords": "typescript react node python golang rust kubernetes docker github gitlab ci cd",
+    "domains": [
+      "github.com/a0rer",
+      "github.com/facebook/react",
+      "stackoverflow.com/questions/tagged/reactjs"
+    ],
+    "examples": [
+      "GitHub - facebook/react",
+      "Stack Overflow - React hooks",
+      "TypeScript documentation"
+    ],
+    "rules": [
+      "github.com/facebook/react",
+      "stackoverflow.com/questions/tagged/reactjs",
+      "regex:github\\.com/.*/(react|next\.js|vite)"
+    ],
+    "color": "#4488ff"
   },
   "obsidian portfolio": {
     "keywords": "obsidian markdown portfolio website cv resume",
     "domains": [],
-    "color": "#4488ff"
+    "examples": [],
+    "color": "#44aa77"
   }
 }
 ```
@@ -54,8 +80,16 @@ Example project config:
 ### Fields
 
 - `keywords` — space-separated terms. Literal matches in title/URL get a strong boost.
-- `domains` — URL paths that should match this project.
+- `domains` — URL paths that should match this project. Full paths beat domain-only matches.
+- `examples` — example titles or URLs that belong to this project. Very strong signal.
+- `rules` — explicit substring or regex rules checked against title and URL. Strongest signal.
+  - Plain text: `"r/selfhosted"` matches if title or URL contains that substring.
+  - Regex: `"regex:github\\.com/.*/react"` matches with a regular expression.
 - `color` — optional color hint for the folder/group.
+
+### Treating projects as topics
+
+You don't have to limit projects to one codebase. A "project" can be any topic you want tabs grouped by — `devops`, `frontend`, `selfhosting`, `career`, etc. Use `keywords`, `domains`, and `examples` to teach the matcher what each topic looks like.
 
 ## Usage
 

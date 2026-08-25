@@ -172,15 +172,99 @@
       .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
   }
 
+  const GENERIC_DOMAINS = new Set([
+    "github.com",
+    "gitlab.com",
+    "bitbucket.org",
+    "stackoverflow.com",
+    "stackexchange.com",
+    "reddit.com",
+    "news.ycombinator.com",
+    "medium.com",
+    "dev.to",
+  ]);
+
+  function extractUrlFeatures(url) {
+    const features = [];
+    try {
+      const u = new URL(url);
+      const host = u.hostname.toLowerCase();
+      const path = u.pathname.toLowerCase();
+      features.push(host);
+      features.push(...path.split("/").filter((s) => s.length > 1));
+
+      // GitHub: owner/repo are strong signals
+      if (host === "github.com" || host.endsWith(".github.com")) {
+        const m = path.match(/^\/([^/]+)\/([^/]+)/);
+        if (m) {
+          features.push(`ghowner_${m[1]}`, `ghrepo_${m[2].replace(/\.git$/, "")}`);
+        }
+      }
+
+      // GitLab similar
+      if (host === "gitlab.com" || host.includes("gitlab")) {
+        const m = path.match(/^\/([^/]+)\/([^/]+)/);
+        if (m) {
+          features.push(`glowner_${m[1]}`, `glrepo_${m[2].replace(/\.git$/, "")}`);
+        }
+      }
+
+      // Reddit: subreddit is a strong signal
+      if (host === "www.reddit.com" || host === "reddit.com" || host === "old.reddit.com") {
+        const m = path.match(/\/r\/([^/]+)/);
+        if (m) features.push(`subreddit_${m[1]}`);
+      }
+
+      // StackOverflow: question tags in URL
+      if (host === "stackoverflow.com" || host.endsWith(".stackexchange.com")) {
+        const m = path.match(/\/questions\/(\d+)\/([^/]+)/);
+        if (m) features.push(`soq_${m[1]}`, ...m[2].split("-"));
+      }
+
+      // YouTube channel/playlist/video
+      if (host === "www.youtube.com" || host === "youtube.com") {
+        const cm = path.match(/\/channel\/([^/]+)/);
+        if (cm) features.push(`ytchannel_${cm[1]}`);
+      }
+    } catch {}
+    return features;
+  }
+
+  function isGenericDomain(url) {
+    try {
+      return GENERIC_DOMAINS.has(new URL(url).hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+
+  function matchRule(rule, title, url) {
+    if (!rule) return false;
+    const r = String(rule).trim();
+    if (!r) return false;
+    const haystack = `${title || ""} ${url || ""}`.toLowerCase();
+    if (r.startsWith("regex:")) {
+      try {
+        const pattern = r.slice(6).trim();
+        const re = new RegExp(pattern, "i");
+        return re.test(title || "") || re.test(url || "");
+      } catch {
+        return false;
+      }
+    }
+    return haystack.includes(r.toLowerCase());
+  }
+
   function buildDocument(tab) {
     const title = getTabTitle(tab);
     const url = getTabUrl(tab);
+    const features = extractUrlFeatures(url);
     let urlText = "";
     try {
       const u = new URL(url);
       urlText = `${u.hostname} ${u.pathname} ${u.searchParams.toString()}`;
     } catch {}
-    return `${title} ${urlText}`;
+    return `${title} ${urlText} ${features.join(" ")}`;
   }
 
   function termFrequency(tokens) {
@@ -318,6 +402,7 @@
   function buildProjectDocument(name, cfg, history) {
     const parts = [name, cfg.keywords || ""];
     if (cfg.domains?.length) parts.push(cfg.domains.join(" "));
+    if (cfg.examples?.length) parts.push(cfg.examples.join(" "));
 
     const hist = history[name];
     if (hist?.positives?.length) {
@@ -331,7 +416,8 @@
     const map = {};
     for (const [name, cfg] of Object.entries(projects)) {
       const set = new Set();
-      for (const src of [name, cfg.keywords || ""]) {
+      const sources = [name, cfg.keywords || "", cfg.examples?.join(" ") || ""];
+      for (const src of sources) {
         for (const t of tokenize(src)) set.add(t);
       }
       map[name] = set;
@@ -360,27 +446,79 @@
       const tabDoc = tabDocs[i];
       const tabTokens = new Set(tokenize(tabDoc));
       const url = getTabUrl(tab).toLowerCase();
+      const features = extractUrlFeatures(getTabUrl(tab));
+      const featureSet = new Set(features.map((f) => f.toLowerCase()));
+      const genericHost = isGenericDomain(getTabUrl(tab));
       const scores = [];
 
       for (let p = 0; p < projectVectors.length; p++) {
         const name = projectNames[p];
+        const cfg = projectEntries[p][1];
         const vec = projectVectors[p];
         let score = cosineSimilarity(tabVec, vec);
 
-        // Boost literal keyword matches in title/URL
+        // Strong boost when the project name itself appears in title/URL
+        const nameTokens = tokenize(name);
+        let nameHits = 0;
+        for (const t of nameTokens) {
+          if (tabTokens.has(t) || url.includes(t)) nameHits++;
+        }
+        if (nameHits === nameTokens.length) score += 0.9;
+        else if (nameHits > 0) score += nameHits * 0.3;
+
+        // Boost literal keyword matches in title/URL/features
         const keywords = keywordSets[name];
         let keywordHits = 0;
         for (const kw of keywords) {
-          if (tabTokens.has(kw) || url.includes(kw)) keywordHits++;
+          if (tabTokens.has(kw) || url.includes(kw) || featureSet.has(kw)) keywordHits++;
         }
-        score += Math.min(keywordHits * 0.25, 0.75);
+        score += Math.min(keywordHits * 0.28, 0.85);
 
-        // Boost exact domain/path matches
-        const domains = projects[name].domains || [];
+        // Boost example matches
+        const examples = cfg.examples || [];
+        for (const ex of examples) {
+          const exLower = ex.toLowerCase();
+          if (url.includes(exLower)) score += 0.35;
+          else {
+            const exTokens = new Set(tokenize(ex));
+            let overlap = 0;
+            for (const t of tabTokens) if (exTokens.has(t)) overlap++;
+            if (exTokens.size && overlap / exTokens.size > 0.5) score += 0.25;
+          }
+        }
+
+        // Explicit rules: substring or regex matches against title/URL
+        const rules = cfg.rules || [];
+        for (const rule of rules) {
+          if (matchRule(rule, getTabTitle(tab), getTabUrl(tab))) {
+            score += 0.9;
+          }
+        }
+
+        // Boost exact domain/path matches; partial matches are much weaker
+        const domains = cfg.domains || [];
         for (const d of domains) {
           const dl = d.toLowerCase();
-          if (url.includes(dl)) score += 0.45;
-          else if (dl.includes("/") && url.includes(dl.split("/")[0])) score += 0.12;
+          if (url.includes(dl)) {
+            score += 0.55;
+          } else if (dl.includes("/")) {
+            const hostPart = dl.split("/")[0];
+            if (url.includes(hostPart)) score += 0.04;
+          }
+        }
+
+        // Domain-specific structured features
+        for (const feat of features) {
+          const fl = feat.toLowerCase();
+          if (keywords.has(fl)) score += 0.4;
+        }
+
+        // Penalize generic hosting sites (GitHub, StackOverflow, Reddit) unless
+        // this project explicitly matches them via domain/keyword.
+        if (genericHost) {
+          const hasExplicitMatch = domains.some((d) => url.includes(d.toLowerCase())) ||
+            [...keywords].some((kw) => url.includes(kw));
+          if (!hasExplicitMatch) score -= 0.15;
         }
 
         // Penalize negative examples
@@ -411,14 +549,28 @@
     return getBoolPref(PREF_GEMINI_ENABLED, false);
   }
 
-  function buildClassifyPrompt(tabs, projectNames) {
+  function buildClassifyPrompt(tabs, projects) {
+    const projectNames = Object.keys(projects);
+    const projectHints = projectNames.map((name) => {
+      const cfg = projects[name];
+      const parts = [name];
+      if (cfg.keywords) parts.push(`keywords: ${cfg.keywords}`);
+      if (cfg.domains?.length) parts.push(`domains: ${cfg.domains.join(", ")}`);
+      if (cfg.examples?.length) parts.push(`examples: ${cfg.examples.join(", ")}`);
+      if (cfg.rules?.length) parts.push(`rules: ${cfg.rules.join(", ")}`);
+      return `- ${parts.join(" | ")}`;
+    });
     const lines = tabs.map((tab, i) => {
       const title = getTabTitle(tab).replace(/\s+/g, " ").trim();
       const url = getTabUrl(tab);
       return `${i}: ${title} | ${url}`;
     });
-    return `Classify each browser tab into exactly one of these projects: ${projectNames.join(", ")}.
-Use the title and URL. Respond with a JSON object mapping each number to a project name, or an empty string if no project fits.
+    return `Classify each browser tab into exactly one of these projects.
+Pay attention to URL paths (e.g., github.com/OWNER/REPO, reddit.com/r/SUBREDDIT) and titles.
+Respond with a JSON object mapping each number to a project name, or an empty string if no project fits.
+
+Projects:
+${projectHints.join("\n")}
 
 Tabs:
 ${lines.join("\n")}`;
@@ -493,7 +645,7 @@ ${lines.join("\n")}`;
         contents: [
           {
             role: "user",
-            parts: [{ text: buildClassifyPrompt(batch, projectNames) }],
+            parts: [{ text: buildClassifyPrompt(batch, projects) }],
           },
         ],
         generationConfig: {
@@ -530,7 +682,7 @@ ${lines.join("\n")}`;
 
     for (let start = 0; start < tabs.length; start += BATCH_SIZE) {
       const batch = tabs.slice(start, start + BATCH_SIZE);
-      const prompt = `${buildClassifyPrompt(batch, projectNames)}
+      const prompt = `${buildClassifyPrompt(batch, projects)}
 
 Respond with JSON only, using this exact shape: { "0": "projectName", "1": "", ... }`;
       const body = {

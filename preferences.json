@@ -39,7 +39,7 @@
     "type": "string",
     "label": "Projects JSON",
     "property": "zen.project.tidy.projects",
-    "defaultValue": "{\"selfhosting\":{\"keywords\":\"proxmox truenas pfsense homelab selfhosted server vm docker\",\"domains\":[\"reddit.com/r/selfhosted\",\"reddit.com/r/homelab\"],\"color\":\"#ff8844\"},\"obsidian portfolio\":{\"keywords\":\"obsidian markdown portfolio website cv resume\",\"domains\":[],\"color\":\"#4488ff\"}}"
+    "defaultValue": "{\"selfhosting\":{\"keywords\":\"proxmox truenas pfsense homelab selfhosted server vm docker unraid nas kvm virtualization\",\"domains\":[\"reddit.com/r/selfhosted\",\"reddit.com/r/homelab\"],\"examples\":[\"Proxmox VE - Dashboard\",\"TrueNAS Scale\",\"reddit.com/r/selfhosted\"],\"rules\":[\"r/selfhosted\",\"r/homelab\",\"proxmox.com\",\"truenas.com\"],\"color\":\"#ff8844\"},\"programming\":{\"keywords\":\"typescript react node python golang rust kubernetes docker github gitlab ci cd\",\"domains\":[\"github.com/a0rer\",\"github.com/facebook/react\",\"stackoverflow.com/questions/tagged/reactjs\"],\"examples\":[\"GitHub - facebook/react\",\"Stack Overflow - React hooks\",\"TypeScript documentation\"],\"rules\":[\"github.com/facebook/react\",\"stackoverflow.com/questions/tagged/reactjs\",\"regex:github\\\\.com/.*/(react|next\\\\.js|vite)\"],\"color\":\"#4488ff\"},\"obsidian portfolio\":{\"keywords\":\"obsidian markdown portfolio website cv resume\",\"domains\":[],\"examples\":[],\"rules\":[],\"color\":\"#44aa77\"}}"
   },
   {
     "type": "dropdown",
