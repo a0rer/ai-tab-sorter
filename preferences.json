@@ -42,8 +42,18 @@
     "defaultValue": "{\"selfhosting\":{\"keywords\":\"proxmox truenas pfsense homelab selfhosted server vm docker\",\"domains\":[\"reddit.com/r/selfhosted\",\"reddit.com/r/homelab\"],\"color\":\"#ff8844\"},\"obsidian portfolio\":{\"keywords\":\"obsidian markdown portfolio website cv resume\",\"domains\":[],\"color\":\"#4488ff\"}}"
   },
   {
+    "type": "dropdown",
+    "label": "AI provider",
+    "property": "zen.project.tidy.ai.provider",
+    "defaultValue": "gemini",
+    "options": [
+      { "label": "Gemini", "value": "gemini" },
+      { "label": "Ollama (local)", "value": "ollama" }
+    ]
+  },
+  {
     "type": "checkbox",
-    "label": "Use Gemini for ambiguous tabs",
+    "label": "Use AI for ambiguous tabs",
     "property": "zen.project.tidy.gemini.enabled",
     "defaultValue": false
   },
@@ -58,5 +68,23 @@
     "label": "Gemini model",
     "property": "zen.project.tidy.gemini.model",
     "defaultValue": "gemini-3.6-flash"
+  },
+  {
+    "type": "string",
+    "label": "Ollama URL",
+    "property": "zen.project.tidy.ollama.url",
+    "defaultValue": "http://localhost:11434"
+  },
+  {
+    "type": "string",
+    "label": "Ollama model",
+    "property": "zen.project.tidy.ollama.model",
+    "defaultValue": "llama3.2"
+  },
+  {
+    "type": "string",
+    "label": "Ollama API key (optional)",
+    "property": "zen.project.tidy.ollama.key",
+    "defaultValue": ""
   }
 ]

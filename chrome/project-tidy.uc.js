@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name          Zen Project Tidy
-// @description   Sort tabs into user-defined project folders with local-first matching and optional Gemini AI fallback.
+// @description   Sort tabs into user-defined project folders with local-first matching and optional AI fallback (Gemini or Ollama).
 // @ignorecache
 // ==/UserScript==
 
 (() => {
   "use strict";
+  try {
 
   const PREF_ENABLED = "zen.project.tidy.enabled";
   const PREF_SHOW_BUTTON = "zen.project.tidy.showButton";
@@ -18,6 +19,11 @@
   const PREF_GEMINI_KEY = "zen.project.tidy.gemini.key";
   const PREF_GEMINI_MODEL = "zen.project.tidy.gemini.model";
   const PREF_GEMINI_CACHE = "zen.project.tidy.gemini.cache";
+
+  const PREF_AI_PROVIDER = "zen.project.tidy.ai.provider";
+  const PREF_OLLAMA_URL = "zen.project.tidy.ollama.url";
+  const PREF_OLLAMA_MODEL = "zen.project.tidy.ollama.model";
+  const PREF_OLLAMA_KEY = "zen.project.tidy.ollama.key";
 
   const MAX_GEMINI_CACHE = 300;
 
@@ -397,14 +403,28 @@
     return results;
   }
 
-  async function geminiClassifyTabs(tabs, projects) {
-    const apiKey = getCharPref(PREF_GEMINI_KEY, "").trim();
-    if (!apiKey) throw new Error("No Gemini API key configured");
+  function getAiProvider() {
+    return getCharPref(PREF_AI_PROVIDER, "gemini");
+  }
 
-    const model = getCharPref(PREF_GEMINI_MODEL, "gemini-3.6-flash");
-    const projectNames = Object.keys(projects);
-    if (!projectNames.length || !tabs.length) return new Map();
+  function aiFallbackEnabled() {
+    return getBoolPref(PREF_GEMINI_ENABLED, false);
+  }
 
+  function buildClassifyPrompt(tabs, projectNames) {
+    const lines = tabs.map((tab, i) => {
+      const title = getTabTitle(tab).replace(/\s+/g, " ").trim();
+      const url = getTabUrl(tab);
+      return `${i}: ${title} | ${url}`;
+    });
+    return `Classify each browser tab into exactly one of these projects: ${projectNames.join(", ")}.
+Use the title and URL. Respond with a JSON object mapping each number to a project name, or an empty string if no project fits.
+
+Tabs:
+${lines.join("\n")}`;
+  }
+
+  function buildClassifySchema(count) {
     const schema = {
       type: "object",
       description:
@@ -412,87 +432,14 @@
       properties: {},
       required: [],
     };
-    for (let i = 0; i < tabs.length; i++) {
-      schema.properties[String(i)] = {
-        type: "string",
-        enum: projectNames,
-        nullable: true,
-      };
+    for (let i = 0; i < count; i++) {
+      schema.properties[String(i)] = { type: "string", nullable: true };
       schema.required.push(String(i));
     }
+    return schema;
+  }
 
-    const lines = tabs.map((tab, i) => {
-      const title = getTabTitle(tab).replace(/\s+/g, " ").trim();
-      const url = getTabUrl(tab);
-      return `${i}: ${title} | ${url}`;
-    });
-
-    const body = {
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              text: `Classify each browser tab into one of these projects: ${projectNames.join(", ")}.
-Use the title and URL. Respond with a JSON object mapping each number to a project name, or an empty string if no project fits.
-
-Tabs:
-${lines.join("\n")}`,
-            },
-          ],
-        },
-      ],
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema: schema,
-        temperature: 0.1,
-      },
-    };
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
-    function postJson(target, payload, timeoutMs = 15000) {
-      return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", target, true);
-        xhr.setRequestHeader("Content-Type", "application/json");
-        xhr.timeout = timeoutMs;
-        xhr.ontimeout = () => reject(new Error("Gemini request timed out"));
-        xhr.onerror = () => reject(new Error(`Gemini request failed: ${xhr.statusText || "network error"}`));
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve(xhr.responseText);
-          } else {
-            reject(new Error(`Gemini HTTP ${xhr.status}: ${xhr.responseText}`));
-          }
-        };
-        xhr.send(payload);
-      });
-    }
-
-    let lastError;
-    let text;
-    const payload = JSON.stringify(body);
-    for (let attempt = 0; attempt <= 2; attempt++) {
-      try {
-        const response = await postJson(url, payload, 60000);
-        const data = JSON.parse(response);
-        text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!text) throw new Error("Gemini returned no content");
-        break;
-      } catch (e) {
-        lastError = e;
-        const isRetryable = e.message?.includes("timed out") || e.message?.includes("503") || e.message?.includes("network error");
-        if (isRetryable && attempt < 2) {
-          console.warn(`[ZenProjectTidy] Gemini ${e.message}, retrying (${attempt + 1}/2)...`);
-          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
-          continue;
-        }
-        throw e;
-      }
-    }
-    if (!text) throw lastError || new Error("Gemini request failed");
-
+  function parseClassifyResponse(text, tabs, projectNames) {
     const parsed = JSON.parse(text);
     const map = new Map();
     for (const [idxStr, name] of Object.entries(parsed)) {
@@ -505,6 +452,145 @@ ${lines.join("\n")}`,
       }
     }
     return map;
+  }
+
+  function postJson(target, payload, timeoutMs = 60000, headers = {}) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", target, true);
+      xhr.setRequestHeader("Content-Type", "application/json");
+      for (const [key, value] of Object.entries(headers)) {
+        xhr.setRequestHeader(key, value);
+      }
+      xhr.timeout = timeoutMs;
+      xhr.ontimeout = () => reject(new Error("AI request timed out"));
+      xhr.onerror = () => reject(new Error(`AI request failed: ${xhr.statusText || "network error"}`));
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(xhr.responseText);
+        } else {
+          reject(new Error(`AI HTTP ${xhr.status}: ${xhr.responseText}`));
+        }
+      };
+      xhr.send(payload);
+    });
+  }
+
+  async function geminiClassifyTabs(tabs, projects) {
+    const apiKey = getCharPref(PREF_GEMINI_KEY, "").trim();
+    if (!apiKey) throw new Error("No Gemini API key configured");
+
+    const model = getCharPref(PREF_GEMINI_MODEL, "gemini-3.6-flash");
+    const projectNames = Object.keys(projects);
+    if (!projectNames.length || !tabs.length) return new Map();
+
+    const BATCH_SIZE = 25;
+    const results = new Map();
+
+    for (let start = 0; start < tabs.length; start += BATCH_SIZE) {
+      const batch = tabs.slice(start, start + BATCH_SIZE);
+      const body = {
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: buildClassifyPrompt(batch, projectNames) }],
+          },
+        ],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: buildClassifySchema(batch.length),
+          temperature: 0.1,
+        },
+      };
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const batchResults = await aiClassifyWithRetry(url, body, "Gemini", batch, projectNames);
+      for (const [tab, project] of batchResults.entries()) {
+        results.set(tab, project);
+      }
+    }
+
+    return results;
+  }
+
+  function getOllamaHeaders() {
+    const key = getCharPref(PREF_OLLAMA_KEY, "").trim();
+    if (!key) return {};
+    return { Authorization: `Bearer ${key}` };
+  }
+
+  async function ollamaClassifyTabs(tabs, projects) {
+    const baseUrl = getCharPref(PREF_OLLAMA_URL, "http://localhost:11434").replace(/\/$/, "");
+    const model = getCharPref(PREF_OLLAMA_MODEL, "llama3.2");
+    const projectNames = Object.keys(projects);
+    if (!projectNames.length || !tabs.length) return new Map();
+
+    const BATCH_SIZE = 25;
+    const results = new Map();
+    const headers = getOllamaHeaders();
+
+    for (let start = 0; start < tabs.length; start += BATCH_SIZE) {
+      const batch = tabs.slice(start, start + BATCH_SIZE);
+      const prompt = `${buildClassifyPrompt(batch, projectNames)}
+
+Respond with JSON only, using this exact shape: { "0": "projectName", "1": "", ... }`;
+      const body = {
+        model,
+        prompt,
+        stream: false,
+        format: "json",
+        options: { temperature: 0.1 },
+      };
+      const url = `${baseUrl}/api/generate`;
+      const batchResults = await aiClassifyWithRetry(url, body, "Ollama", batch, projectNames, (data) => {
+        return data.response || data.message?.content || "";
+      }, headers);
+      for (const [tab, project] of batchResults.entries()) {
+        results.set(tab, project);
+      }
+    }
+
+    return results;
+  }
+
+  async function aiClassifyWithRetry(url, body, label, tabs, projectNames, extractText, headers) {
+    const defaultExtract = (data) => {
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    };
+    const extract = extractText || defaultExtract;
+
+    let lastError;
+    let text;
+    const payload = JSON.stringify(body);
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      try {
+        const response = await postJson(url, payload, 60000, headers);
+        const data = JSON.parse(response);
+        text = extract(data);
+        if (!text) throw new Error(`${label} returned no content`);
+        break;
+      } catch (e) {
+        lastError = e;
+        const msg = e.message || "";
+        const isRetryable = msg.includes("timed out") || msg.includes("503") || msg.includes("429") || msg.includes("network error");
+        if (isRetryable && attempt < 2) {
+          const delay = msg.includes("429") ? 15000 : 2000 * (attempt + 1);
+          console.warn(`[ZenProjectTidy] ${label} ${msg}, retrying in ${delay}ms (${attempt + 1}/2)...`);
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+        throw e;
+      }
+    }
+    if (!text) throw lastError || new Error(`${label} request failed`);
+    return parseClassifyResponse(text, tabs, projectNames);
+  }
+
+  async function aiClassifyTabs(tabs, projects) {
+    const provider = getAiProvider();
+    if (provider === "ollama") {
+      return ollamaClassifyTabs(tabs, projects);
+    }
+    return geminiClassifyTabs(tabs, projects);
   }
 
   // ---------------------------------------------------------------------------
@@ -540,14 +626,13 @@ ${lines.join("\n")}`,
   }
 
   function createZenFolder(name, workspaceId, color, tabs) {
+    const tabList = Array.from(tabs || []);
     try {
       if (window.gZenFolders?.createFolder) {
         let folder;
         try {
-          // Current Zen signature: (name, workspaceId, tabs)
-          folder = gZenFolders.createFolder(name, workspaceId, tabs || []);
+          folder = gZenFolders.createFolder(name, workspaceId, tabList);
         } catch {
-          // Fallback for other signatures
           folder = gZenFolders.createFolder(name, workspaceId);
         }
         if (folder) {
@@ -556,7 +641,7 @@ ${lines.join("\n")}`,
         }
       }
     } catch (e) {
-      console.warn("[ZenProjectTidy] gZenFolders.createFolder failed:", e);
+      console.warn("[ZenProjectTidy] gZenFolders.createFolder failed:", e.message || e);
     }
 
     // Manual fallback
@@ -698,7 +783,7 @@ ${lines.join("\n")}`,
       const localScores = scoreAllTabs(tabs, projects, history);
       console.log("[ZenProjectTidy] Scoring complete");
 
-      const geminiEnabled = getBoolPref(PREF_GEMINI_ENABLED, false);
+      const aiEnabled = aiFallbackEnabled();
       const geminiCache = loadGeminiCache();
 
       const plan = [];
@@ -725,7 +810,7 @@ ${lines.join("\n")}`,
           continue;
         }
 
-        if (geminiEnabled) {
+        if (aiEnabled) {
           ambiguousTabs.push(tab);
         }
       }
@@ -733,8 +818,8 @@ ${lines.join("\n")}`,
       if (ambiguousTabs.length) {
         console.log(`[ZenProjectTidy] ${ambiguousTabs.length} ambiguous tabs; calling Gemini...`);
         try {
-          const geminiResults = await geminiClassifyTabs(ambiguousTabs, projects);
-          for (const [tab, project] of geminiResults.entries()) {
+          const aiResults = await aiClassifyTabs(ambiguousTabs, projects);
+          for (const [tab, project] of aiResults.entries()) {
             geminiCache[cacheKey(tab)] = project;
             if (project && projectNames.includes(project)) {
               plan.push({ tab, project, score: 0, source: "gemini" });
@@ -826,85 +911,58 @@ ${lines.join("\n")}`,
   // Cross-workspace AI project discovery
   // ---------------------------------------------------------------------------
 
-  async function geminiDiscoverCategories(items) {
-    const apiKey = getCharPref(PREF_GEMINI_KEY, "").trim();
-    if (!apiKey) throw new Error("No Gemini API key configured");
-
-    const model = getCharPref(PREF_GEMINI_MODEL, "gemini-3.6-flash");
-
+  function buildDiscoverPrompt(items) {
     const lines = items.map((item, i) => {
       const title = item.title.replace(/\s+/g, " ").trim();
       const url = item.url;
       return `${i}: ${title} | ${url}`;
     });
+    return `Suggest up to 8 project categories for these browser tabs. Each category should have a short lowercase name, relevant keywords separated by spaces, an optional hex color, and the indices of tabs that belong to it.\n\nTabs:\n${lines.join("\n")}\n\nRespond with JSON only.`;
+  }
 
-    const schema = {
-      type: "object",
-      description: "Suggested project categories for the given tabs.",
-      properties: {
-        categories: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              name: { type: "string" },
-              keywords: { type: "string" },
-              color: { type: "string" },
-              tabIndices: {
-                type: "array",
-                items: { type: "integer" },
-              },
+  const DISCOVER_SCHEMA = {
+    type: "object",
+    description: "Suggested project categories for the given tabs.",
+    properties: {
+      categories: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            keywords: { type: "string" },
+            color: { type: "string" },
+            tabIndices: {
+              type: "array",
+              items: { type: "integer" },
             },
-            required: ["name", "keywords", "tabIndices"],
           },
+          required: ["name", "keywords", "tabIndices"],
         },
       },
-      required: ["categories"],
-    };
+    },
+    required: ["categories"],
+  };
 
+  function parseDiscoverResponse(text) {
+    const parsed = JSON.parse(text);
+    return (parsed.categories || []).filter((c) => c.name && Array.isArray(c.tabIndices));
+  }
+
+  async function geminiDiscoverCategories(items) {
+    const apiKey = getCharPref(PREF_GEMINI_KEY, "").trim();
+    if (!apiKey) throw new Error("No Gemini API key configured");
+
+    const model = getCharPref(PREF_GEMINI_MODEL, "gemini-3.6-flash");
     const body = {
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              text: `Suggest up to 8 project categories for these browser tabs. Each category should have a short lowercase name, relevant keywords separated by spaces, an optional hex color, and the indices of tabs that belong to it.
-
-Tabs:
-${lines.join("\n")}
-
-Respond with JSON only.`,
-            },
-          ],
-        },
-      ],
+      contents: [{ role: "user", parts: [{ text: buildDiscoverPrompt(items) }] }],
       generationConfig: {
         responseMimeType: "application/json",
-        responseSchema: schema,
+        responseSchema: DISCOVER_SCHEMA,
         temperature: 0.2,
       },
     };
-
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
-    function postJson(target, payload, timeoutMs = 60000) {
-      return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", target, true);
-        xhr.setRequestHeader("Content-Type", "application/json");
-        xhr.timeout = timeoutMs;
-        xhr.ontimeout = () => reject(new Error("Gemini request timed out"));
-        xhr.onerror = () => reject(new Error(`Gemini request failed: ${xhr.statusText || "network error"}`));
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve(xhr.responseText);
-          } else {
-            reject(new Error(`Gemini HTTP ${xhr.status}: ${xhr.responseText}`));
-          }
-        };
-        xhr.send(payload);
-      });
-    }
 
     let lastError;
     let text;
@@ -928,9 +986,55 @@ Respond with JSON only.`,
       }
     }
     if (!text) throw lastError || new Error("Gemini request failed");
+    return parseDiscoverResponse(text);
+  }
 
-    const parsed = JSON.parse(text);
-    return (parsed.categories || []).filter((c) => c.name && Array.isArray(c.tabIndices));
+  async function ollamaDiscoverCategories(items) {
+    const baseUrl = getCharPref(PREF_OLLAMA_URL, "http://localhost:11434").replace(/\/$/, "");
+    const model = getCharPref(PREF_OLLAMA_MODEL, "llama3.2");
+    const headers = getOllamaHeaders();
+    const shape = '{ "categories": [{ "name": "...", "keywords": "...", "color": "#...", "tabIndices": [0,1,...] }] }';
+    const prompt = `${buildDiscoverPrompt(items)}\n\nUse this exact JSON shape: ${shape}`;
+    const body = {
+      model,
+      prompt,
+      stream: false,
+      format: "json",
+      options: { temperature: 0.2 },
+    };
+    const url = `${baseUrl}/api/generate`;
+
+    let lastError;
+    let text;
+    const payload = JSON.stringify(body);
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      try {
+        const response = await postJson(url, payload, 60000, headers);
+        const data = JSON.parse(response);
+        text = data.response || data.message?.content || "";
+        if (!text) throw new Error("Ollama returned no content");
+        break;
+      } catch (e) {
+        lastError = e;
+        const isRetryable = e.message?.includes("timed out") || e.message?.includes("503") || e.message?.includes("network error");
+        if (isRetryable && attempt < 2) {
+          console.warn(`[ZenProjectTidy] Ollama ${e.message}, retrying (${attempt + 1}/2)...`);
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+          continue;
+        }
+        throw e;
+      }
+    }
+    if (!text) throw lastError || new Error("Ollama request failed");
+    return parseDiscoverResponse(text);
+  }
+
+  async function aiDiscoverCategories(items) {
+    const provider = getAiProvider();
+    if (provider === "ollama") {
+      return ollamaDiscoverCategories(items);
+    }
+    return geminiDiscoverCategories(items);
   }
 
   async function moveTabsToProject(tabs, name, workspaceId, cfg) {
@@ -971,10 +1075,19 @@ Respond with JSON only.`,
   }
 
   async function discoverProjects() {
-    const apiKey = getCharPref(PREF_GEMINI_KEY, "").trim();
-    if (!apiKey) {
-      showToast("No Gemini API key configured");
-      return { discovered: 0, sorted: 0 };
+    const provider = getAiProvider();
+    if (provider === "ollama") {
+      const url = getCharPref(PREF_OLLAMA_URL, "http://localhost:11434").trim();
+      if (!url) {
+        showToast("No Ollama URL configured");
+        return { discovered: 0, sorted: 0 };
+      }
+    } else {
+      const apiKey = getCharPref(PREF_GEMINI_KEY, "").trim();
+      if (!apiKey) {
+        showToast("No Gemini API key configured");
+        return { discovered: 0, sorted: 0 };
+      }
     }
 
     const workspaceIds = getAllWorkspaceIds();
@@ -1000,11 +1113,11 @@ Respond with JSON only.`,
       return { discovered: 0, sorted: 0 };
     }
 
-    console.log(`[ZenProjectTidy] Analyzing ${items.length} tabs across ${workspaceIds.length} workspaces with Gemini...`);
+    console.log(`[ZenProjectTidy] Analyzing ${items.length} tabs across ${workspaceIds.length} workspaces with ${provider}...`);
 
     let categories;
     try {
-      categories = await geminiDiscoverCategories(items);
+      categories = await aiDiscoverCategories(items);
     } catch (e) {
       console.error("[ZenProjectTidy] Project discovery failed:", e);
       showToast("Project discovery failed — check console");
@@ -1017,7 +1130,8 @@ Respond with JSON only.`,
     }
 
     const names = categories.map((c) => c.name).join(", ");
-    if (!window.confirm(`Gemini suggests these categories:\n${names}\n\nCreate them and sort tabs?`)) {
+    const providerLabel = provider.charAt(0).toUpperCase() + provider.slice(1);
+    if (!window.confirm(`${providerLabel} suggests these categories:\n${names}\n\nCreate them and sort tabs?`)) {
       showToast("Project discovery cancelled");
       return { discovered: 0, sorted: 0 };
     }
@@ -1222,13 +1336,58 @@ Respond with JSON only.`,
   }
 
   // ---------------------------------------------------------------------------
+  // Context menu
+  // ---------------------------------------------------------------------------
+
+  function injectContextMenu() {
+    if (document.getElementById("project-tidy-context-menu")) return;
+
+    const tabContextMenu =
+      document.getElementById("tabContextMenu") ||
+      document.getElementById("tab_context_menu") ||
+      document.querySelector(".tab-context-menu");
+    if (!tabContextMenu) return;
+
+    const separator = document.createXULElement?.("menuseparator") || document.createElement("menuseparator");
+    separator.id = "project-tidy-context-separator";
+
+    const menu = document.createXULElement?.("menu") || document.createElement("menu");
+    menu.id = "project-tidy-context-menu";
+    menu.setAttribute("label", "Project Tidy");
+
+    const popup = document.createXULElement?.("menupopup") || document.createElement("menupopup");
+    popup.id = "project-tidy-context-popup";
+
+    const sortItem = document.createXULElement?.("menuitem") || document.createElement("menuitem");
+    sortItem.id = "project-tidy-context-sort";
+    sortItem.setAttribute("label", "Sort tabs into projects");
+    sortItem.addEventListener("command", async () => {
+      await sortTabs();
+    });
+
+    const discoverItem = document.createXULElement?.("menuitem") || document.createElement("menuitem");
+    discoverItem.id = "project-tidy-context-discover";
+    discoverItem.setAttribute("label", "Discover categories with AI");
+    discoverItem.addEventListener("command", async () => {
+      await discoverProjects();
+    });
+
+    popup.appendChild(sortItem);
+    popup.appendChild(discoverItem);
+    menu.appendChild(popup);
+
+    tabContextMenu.appendChild(separator);
+    tabContextMenu.appendChild(menu);
+  }
+
+  // ---------------------------------------------------------------------------
   // Observers & lifecycle
   // ---------------------------------------------------------------------------
 
   function waitForDependencies() {
     return new Promise((resolve) => {
       const needed = ["gBrowser", "gZenWorkspaces"];
-      const check = () => needed.every((dep) => window.hasOwnProperty(dep));
+      const check = () => needed.every((dep) => dep in window && window[dep] != null);
       if (check()) return resolve();
 
       const id = setInterval(() => {
@@ -1252,9 +1411,11 @@ Respond with JSON only.`,
 
     injectFallbackStyles();
     addButtonsToSeparators();
+    injectContextMenu();
 
     const observer = new MutationObserver(() => {
       addButtonsToSeparators();
+      injectContextMenu();
     });
 
     const tabsList = document.getElementById("zen-tabs-list");
@@ -1284,7 +1445,7 @@ Respond with JSON only.`,
   }
 
   // Expose a minimal API for advanced users / debugging
-  window.ZenProjectTidy = {
+  const tidyApi = {
     sortTabs,
     discoverProjects,
     exportTabs,
@@ -1294,4 +1455,19 @@ Respond with JSON only.`,
     saveHistory,
     recordCorrection,
   };
+  window.ZenProjectTidy = tidyApi;
+  try {
+    const svc =
+      (typeof Services !== "undefined" && Services) ||
+      ChromeUtils.import("resource://gre/modules/Services.jsm").Services;
+    const browserWin = svc.wm.getMostRecentWindow("navigator:browser");
+    if (browserWin && browserWin !== window) {
+      browserWin.ZenProjectTidy = tidyApi;
+    }
+  } catch (e) {
+    console.warn("[ZenProjectTidy] Could not expose API to browser window:", e);
+  }
+  } catch (e) {
+    console.error("[ZenProjectTidy] Fatal startup error:", e);
+  }
 })();

@@ -61,7 +61,9 @@ Example project config:
 
 Click the sparkle button on the divider between pinned and normal tabs. Ungrouped tabs are matched to your projects and moved into folders (or groups).
 
-- **Shift+click** the button to run **AI project discovery**: Gemini analyzes tabs across *all* workspaces, suggests project categories, and sorts tabs after you confirm.
+- **Right-click any tab** and choose **Project Tidy → Sort tabs into projects** to sort the current workspace.
+- Choose **Project Tidy → Discover categories with AI** to run AI project discovery.
+- **Shift+click** the sparkle button to run **AI project discovery**: the configured AI provider analyzes tabs across *all* workspaces, suggests project categories, and sorts tabs after you confirm.
 
 ## Debug
 
@@ -82,22 +84,32 @@ If learning is enabled, the mod records which tabs you manually move into or out
 - **Folders** (default): pins tabs and places them in `zen-folder` containers.
 - **Groups**: uses native Zen tab groups instead.
 
-## Optional Gemini fallback
+## Optional AI fallback
 
 Set these in Sine preferences or `about:config`:
 
-- `zen.project.tidy.gemini.enabled` — enable Gemini for ambiguous tabs.
+- `zen.project.tidy.ai.provider` — choose `gemini` or `ollama`.
+- `zen.project.tidy.gemini.enabled` — enable AI fallback for ambiguous tabs.
+
+### Gemini
+
 - `zen.project.tidy.gemini.key` — your Gemini API key.
 - `zen.project.tidy.gemini.model` — model name (default: `gemini-3.6-flash`).
 
-When enabled, tabs that don't confidently match locally are sent to Gemini in **one batched request**. The result is cached by hostname+title, so the same tab only costs an API call once. If Gemini fails or is disabled, the mod falls back to the local score or skips the tab.
+### Ollama (local)
+
+- `zen.project.tidy.ollama.url` — Ollama server URL (default: `http://localhost:11434`).
+- `zen.project.tidy.ollama.model` — model name (default: `llama3.2`).
+- `zen.project.tidy.ollama.key` — API key (optional). Only needed if you secured Ollama with `OLLAMA_API_KEY` or run it behind a reverse proxy that requires a `Bearer` token.
+
+When enabled, tabs that don't confidently match locally are sent to the selected provider in **one batched request**. The result is cached by hostname+title, so the same tab only costs an API call once. If the AI request fails or is disabled, the mod falls back to the local score or skips the tab.
 
 ## Limitations
 
-- Normal sort works on the current workspace only; cross-workspace discovery requires Gemini.
+- Normal sort works on the current workspace only; cross-workspace discovery requires an AI provider.
 - Zen folders require a recent Zen build with folder support.
 - Matching quality depends on the keywords/examples you provide.
-- Gemini fallback requires an internet connection and a Google API key.
+- Gemini fallback requires an internet connection and a Google API key; Ollama runs locally.
 
 ## License
 
