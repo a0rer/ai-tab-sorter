@@ -633,6 +633,8 @@ Respond with JSON only, using this exact shape: { "0": "projectName", "1": "", .
         try {
           folder = gZenFolders.createFolder(name, workspaceId, tabList);
         } catch {
+          // Some Zen builds don't accept a tab list argument; fall back to
+          // creating an empty folder and moving tabs manually afterwards.
           folder = gZenFolders.createFolder(name, workspaceId);
         }
         if (folder) {
@@ -641,7 +643,7 @@ Respond with JSON only, using this exact shape: { "0": "projectName", "1": "", .
         }
       }
     } catch (e) {
-      console.warn("[ZenProjectTidy] gZenFolders.createFolder failed:", e.message || e);
+      // gZenFolders isn't usable on this build; fall through to manual DOM creation.
     }
 
     // Manual fallback
@@ -1348,9 +1350,6 @@ Respond with JSON only, using this exact shape: { "0": "projectName", "1": "", .
       document.querySelector(".tab-context-menu");
     if (!tabContextMenu) return;
 
-    const separator = document.createXULElement?.("menuseparator") || document.createElement("menuseparator");
-    separator.id = "project-tidy-context-separator";
-
     const menu = document.createXULElement?.("menu") || document.createElement("menu");
     menu.id = "project-tidy-context-menu";
     menu.setAttribute("label", "Project Tidy");
@@ -1376,8 +1375,17 @@ Respond with JSON only, using this exact shape: { "0": "projectName", "1": "", .
     popup.appendChild(discoverItem);
     menu.appendChild(popup);
 
-    tabContextMenu.appendChild(separator);
-    tabContextMenu.appendChild(menu);
+    // Try to place the menu inside the existing layout after a known item so
+    // MenuSectionLayout doesn't complain about unplaced children.
+    const anchor =
+      document.getElementById("context_reloadTab") ||
+      document.getElementById("context_zenSplitTabs") ||
+      document.getElementById("context_closeTab");
+    if (anchor && anchor.nextSibling) {
+      tabContextMenu.insertBefore(menu, anchor.nextSibling);
+    } else {
+      tabContextMenu.appendChild(menu);
+    }
   }
 
   // ---------------------------------------------------------------------------
