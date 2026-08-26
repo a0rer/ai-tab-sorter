@@ -354,7 +354,7 @@
     if (!gBrowser?.tabs) return [];
     return Array.from(gBrowser.tabs).filter((tab) => {
       if (!tab?.isConnected) return false;
-      if (tab.pinned) return false;
+      if (tab.pinned && tab.group?.isZenFolder) return false;
       if (tab.hasAttribute("zen-empty-tab")) return false;
       if (tab.hasAttribute("zen-glance-tab")) return false;
       if (tab.hasAttribute("zen-essential")) return false;
