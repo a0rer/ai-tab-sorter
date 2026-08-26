@@ -781,24 +781,21 @@ Respond with JSON only, using this exact shape: { "0": "projectName", "1": "", .
     const tabList = Array.from(tabs || []);
     try {
       if (window.gZenFolders?.createFolder) {
-        let folder;
-        try {
-          folder = gZenFolders.createFolder(name, workspaceId, tabList);
-        } catch {
-          // Some Zen builds don't accept a tab list argument; fall back to
-          // creating an empty folder and moving tabs manually afterwards.
-          folder = gZenFolders.createFolder(name, workspaceId);
-        }
+        const folder = gZenFolders.createFolder(tabList, {
+          label: name,
+          workspaceId,
+          saveOnWindowClose: true,
+        });
         if (folder) {
           if (color) folder.style.setProperty("--folder-color", color);
           return folder;
         }
       }
     } catch (e) {
-      // gZenFolders isn't usable on this build; fall through to manual DOM creation.
+      console.warn("[ZenProjectTidy] gZenFolders.createFolder failed:", e.message || e);
     }
 
-    // Manual fallback
+    // Manual fallback (won't persist across restarts)
     try {
       const folder = document.createXULElement?.("zen-folder") || document.createElement("zen-folder");
       folder.setAttribute("label", name);
@@ -862,6 +859,12 @@ Respond with JSON only, using this exact shape: { "0": "projectName", "1": "", .
 
   async function pinTabAndMoveToFolder(tab, folder) {
     try {
+      // Prefer the Zen folder's addTabs method; it handles pinning and session state.
+      if (folder.addTabs && typeof folder.addTabs === "function") {
+        folder.addTabs([tab]);
+        return true;
+      }
+
       if (!tab.pinned) {
         gBrowser.pinTab(tab);
       }
